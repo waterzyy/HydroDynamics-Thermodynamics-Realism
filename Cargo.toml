@@ -1,0 +1,45 @@
+[package]
+name = "hydrodynamics"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.72"
+description = "Water, heat and phase transitions for the Horizon voxel engine (wasm32-unknown-unknown)"
+authors = ["Horizon Physics Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/waterzyy/vibecode-test"
+keywords = ["minecraft", "voxel", "wasm", "simulation", "thermodynamics"]
+categories = ["games", "simulation"]
+
+[lib]
+name = "hydrodynamics"
+# `cdylib` is the artifact the Horizon engine loads from the WASM sandbox.
+# `rlib` is kept so the physics suite can be exercised natively with `cargo test`
+# on the host machine (no WASM runtime required).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Intentionally empty: the mod ships with zero third-party crates so that the
+# produced .wasm stays tiny, has a flat dependency surface and performs no
+# hidden heap allocations during the simulation tick.
+
+[profile.release]
+opt-level = "s"      # size-first: WASM modules are streamed to the client
+lto = "fat"          # whole-program optimisation across the physics modules
+codegen-units = 1    # single CGU => best cross-module inlining
+panic = "abort"      # a panicking sandbox is unrecoverable; abort keeps the module small
+strip = true         # drop symbol names from the shipped artifact
+overflow-checks = false
+debug = false
+
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[profile.test]
+# Tests run on the host with debug assertions; integer overflow panics help catch
+# fixed-point regressions (e.g. an i16 temperature being shifted too far).
+opt-level = 2
+overflow-checks = true
