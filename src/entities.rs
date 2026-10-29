@@ -280,7 +280,14 @@ impl EntityForces {
 /// damping that fluid applies to motion. Compression damage only depends on the
 /// hydrostatic head, so it is read from the column rather than accumulated.
 #[must_use]
-pub fn query(grid: &Grid, x: i32, y: i32, z: i32, entity_density: u32, t: &Tunables) -> EntityForces {
+pub fn query(
+    grid: &Grid,
+    x: i32,
+    y: i32,
+    z: i32,
+    entity_density: u32,
+    t: &Tunables,
+) -> EntityForces {
     let cell = match grid.get_world(x, y, z) {
         Some(v) => v,
         None => {

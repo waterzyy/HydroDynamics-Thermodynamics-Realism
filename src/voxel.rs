@@ -269,7 +269,11 @@ impl Species {
             }
             let sp = Species::from_u8(id as u8);
             // Reject ids that the table pads with Air but that were never named.
-            return if sp == Species::Air && id != 0 { None } else { Some(sp) };
+            return if sp == Species::Air && id != 0 {
+                None
+            } else {
+                Some(sp)
+            };
         }
         // Strip a `namespace:` prefix.
         let name = match name.split_once(':') {

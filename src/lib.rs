@@ -56,7 +56,7 @@
 //! | `horizon_set_block` | `(x, y, z, word: u64) -> u32` | write + wake the neighbourhood |
 //! | `horizon_probe` | `(x, y, z) -> u32` | species/temp/pressure for the HUD |
 //! | `horizon_entity_forces` | `(x, y, z, density) -> u64` | buoyancy, updraft, jet, drag for an entity |
-//! | `horizon_entity_status` | `(x, y, z) -> u32` | submersion depth + barotrauma | 
+//! | `horizon_entity_status` | `(x, y, z) -> u32` | submersion depth + barotrauma |
 //! | `horizon_run_command` | `(ptr, len) -> u32` | one `/hd` line → JSON reply |
 //! | `horizon_reply_ptr` / `_len` | `() -> *const u8` / `() -> u32` | the reply of the last command |
 //! | `horizon_stats_ptr` | `() -> *const u32` | 8 diagnostics words |
@@ -631,9 +631,7 @@ pub extern "C" fn horizon_probe(x: i32, y: i32, z: i32) -> u32 {
 /// unloaded chunk is treated as standing in still air.
 #[no_mangle]
 pub extern "C" fn horizon_entity_forces(x: i32, y: i32, z: i32, density: u32) -> u64 {
-    with_sim(|sim| {
-        entities::query(&sim.grid, x, y, z, density, &sim.tunables).to_u64()
-    })
+    with_sim(|sim| entities::query(&sim.grid, x, y, z, density, &sim.tunables).to_u64())
 }
 
 /// Submersion depth and barotrauma for an entity at `(x, y, z)`:
@@ -643,9 +641,7 @@ pub extern "C" fn horizon_entity_forces(x: i32, y: i32, z: i32, density: u32) ->
 /// once per player per second, while the force word is needed every tick.
 #[no_mangle]
 pub extern "C" fn horizon_entity_status(x: i32, y: i32, z: i32) -> u32 {
-    with_sim(|sim| {
-        entities::query(&sim.grid, x, y, z, 0, &sim.tunables).to_status_u32()
-    })
+    with_sim(|sim| entities::query(&sim.grid, x, y, z, 0, &sim.tunables).to_status_u32())
 }
 
 /// Runs one `/hd` command. `ptr`/`len` point at the UTF-8 argument line (see
@@ -1105,7 +1101,10 @@ mod tests {
         assert!(n > 0);
         let text = core::str::from_utf8(&s.reply).unwrap();
         assert!(text.contains("\"ok\":true"), "{text}");
-        assert_eq!(s.get_block(2, 2, 2).map(|v| v.species()), Some(Species::Lava));
+        assert_eq!(
+            s.get_block(2, 2, 2).map(|v| v.species()),
+            Some(Species::Lava)
+        );
 
         // And through the exported entry point, using a buffer the module owns.
         let ptr = horizon_alloc(5);
@@ -1114,7 +1113,7 @@ mod tests {
         unsafe { core::ptr::copy_nonoverlapping(b"stats".as_ptr(), ptr, 5) };
         // SAFETY: the pointer and length are the ones we just allocated.
         let n = unsafe { horizon_run_command(ptr, 5) };
-        assert_eq!(n as usize, horizon_reply_len());
+        assert_eq!(n as usize, horizon_reply_len() as usize);
         assert!(n > 0);
         // SAFETY: `ptr` came from `horizon_alloc(5)`.
         unsafe { horizon_free(ptr, 5) };

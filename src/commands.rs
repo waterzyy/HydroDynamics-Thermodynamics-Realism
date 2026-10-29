@@ -80,7 +80,10 @@ fn cmd_help() -> String {
     let mut s = String::from("\"usage\":[");
     let cmds = [
         ("stats", "diagnostics snapshot"),
-        ("book [chapter]", "give the Atlas, optionally opening a chapter"),
+        (
+            "book [chapter]",
+            "give the Atlas, optionally opening a chapter",
+        ),
         ("probe <x> <y> <z>", "dump one voxel"),
         ("set <x> <y> <z> <species> [mass] [temp]", "write one voxel"),
         ("wake <radius> [x y z]", "re-queue resident chunks"),
@@ -121,13 +124,15 @@ fn cmd_book(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
     // Validate before granting: a typo must not hand out a book page that the
     // player cannot open.
     let chapter = match args.first() {
-        Some(id) => Some(*CHAPTERS
-            .iter()
-            .find(|c| c.id.eq_ignore_ascii_case(id))
-            .ok_or_else(|| {
-                let ids: Vec<&str> = CHAPTERS.iter().map(|c| c.id).collect();
-                format!("unknown chapter '{id}'; known: {}", ids.join(", "))
-            })?),
+        Some(id) => Some(
+            *CHAPTERS
+                .iter()
+                .find(|c| c.id.eq_ignore_ascii_case(id))
+                .ok_or_else(|| {
+                    let ids: Vec<&str> = CHAPTERS.iter().map(|c| c.id).collect();
+                    format!("unknown chapter '{id}'; known: {}", ids.join(", "))
+                })?,
+        ),
         None => None,
     };
     let granted = if sim.tunables.give_book_on_join {
@@ -173,10 +178,7 @@ fn cmd_book(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
 fn cmd_probe(sim: &Sim, args: &[&str]) -> Result<String, String> {
     let (x, y, z) = coords(args)?;
     match sim.get_block(x, y, z) {
-        Some(v) => Ok(format!(
-            "\"pos\":[{x},{y},{z}],\"block\":{}",
-            describe(v)
-        )),
+        Some(v) => Ok(format!("\"pos\":[{x},{y},{z}],\"block\":{}", describe(v))),
         None => Err(format!("no chunk is resident at ({x}, {y}, {z})")),
     }
 }
@@ -235,11 +237,7 @@ fn cmd_wake(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
     // With coordinates the wake is centred there; without them every resident
     // chunk is re-queued (that is the "the world looks stuck" fix).
     let centre = if args.len() >= 4 {
-        Some((
-            num(args[1])?,
-            num(args[2])?,
-            num(args[3])?,
-        ))
+        Some((num(args[1])?, num(args[2])?, num(args[3])?))
     } else {
         None
     };
@@ -278,7 +276,11 @@ fn cmd_profile(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
         "low" => crate::config::Tunables::low_end(),
         "default" => crate::config::Tunables::DEFAULT,
         "high" => crate::config::Tunables::high_fidelity(),
-        other => return Err(format!("profile '{other}' is unknown; try low, default or high")),
+        other => {
+            return Err(format!(
+                "profile '{other}' is unknown; try low, default or high"
+            ))
+        }
     };
     // Preserve the world identity and the book policy: a profile is a
     // performance/fidelity switch, not a world reset.
@@ -293,9 +295,7 @@ fn cmd_profile(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
     sim.grid.ambient = sim.tunables.ambient_c;
     Ok(format!(
         "\"profile\":\"{name}\",\"tick_budget\":{},\"substeps\":{},\"flash_radius\":{}",
-        sim.tunables.tick_budget,
-        sim.tunables.hydro_substeps,
-        sim.tunables.flash_radius
+        sim.tunables.tick_budget, sim.tunables.hydro_substeps, sim.tunables.flash_radius
     ))
 }
 
@@ -391,7 +391,10 @@ mod tests {
         s.set_block(1, 1, 1, Voxel::water(20));
         s.tick();
         let reply = run(&mut s, "stats");
-        assert!(reply.starts_with("{\"ok\":true,\"command\":\"stats\""), "{reply}");
+        assert!(
+            reply.starts_with("{\"ok\":true,\"command\":\"stats\""),
+            "{reply}"
+        );
         assert!(reply.contains("\"chunks\":1"), "{reply}");
         assert!(reply.contains("\"mass\":8"), "{reply}");
     }
@@ -437,7 +440,10 @@ mod tests {
 
         // A zero mass clears the cell.
         run(&mut s, "set 2 3 4 water 0");
-        assert_eq!(s.get_block(2, 3, 4).map(|v| v.species), Some(Species::Air as u8));
+        assert_eq!(
+            s.get_block(2, 3, 4).map(|v| v.species),
+            Some(Species::Air as u8)
+        );
         assert_eq!(s.get_block(2, 3, 4).map(|v| v.mass), Some(0));
     }
 
@@ -483,7 +489,10 @@ mod tests {
         let reply = run(&mut s, "wake 1 1 1 1");
         assert!(reply.contains("\"chunks_woken\":1"), "{reply}");
         let reply = run(&mut s, "wake 0");
-        assert!(reply.contains("\"ok\":false"), "radius is validated: {reply}");
+        assert!(
+            reply.contains("\"ok\":false"),
+            "radius is validated: {reply}"
+        );
     }
 
     #[test]
