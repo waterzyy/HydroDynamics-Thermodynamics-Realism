@@ -68,6 +68,12 @@ const RADIATION_DIV: i64 = 10_000_000_000;
 /// Maximum number of cells a steam bubble may shift when it displaces water.
 const MAX_BUBBLE_CHAIN: usize = 4;
 
+/// Largest temperature step a single gas cell may take towards the ambient in
+/// one tick (°C). See the comment in [`relax_surface`]: it keeps a vapour plume
+/// coherent long enough to travel, which is what the condensation/steam-engine
+/// gameplay is built on.
+const GAS_RELAX_STEP_C: i64 = 8;
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -483,8 +489,13 @@ fn relax_surface(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> bool
         delta = -over;
     }
     // A single tick can never move a cell by more than 64 °C: the sky is a
-    // reservoir, not a teleporter.
-    delta = delta.clamp(-64, 64);
+    // reservoir, not a teleporter. A gas cell gets a much tighter cap: its
+    // volumetric heat capacity is ~2 000× smaller than water's, so the raw
+    // relaxation term would slam a steam plume from 140 °C to ambient in a
+    // single tick and the plume would never be visible (nor would it carry any
+    // vapour up a shaft, which is the whole point of the steam engine chapter).
+    let step_cap = if v.is_gas() { GAS_RELAX_STEP_C } else { 64 };
+    delta = delta.clamp(-step_cap, step_cap);
 
     if delta == 0 {
         return false;
@@ -802,12 +813,18 @@ fn bubble_outlet(grid: &Grid, slot: usize, idx: usize) -> Option<crate::grid::Ne
 }
 
 /// Steam → water droplets.
-fn condense_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> (Event, u16) {
+///
+/// The droplet keeps the **whole** mass of the vapour cell: `mass` is a volume
+/// fraction of the block, and every kernel in the mod is required to conserve
+/// it (`Grid::total_mass` is the counter the conservation tests assert on). A
+/// condensation that rounded a one-unit wisp up to a two-unit droplet would
+/// silently create water out of nothing — and a long, cold cave would slowly
+/// fill itself.
+fn condense_cell(grid: &mut Grid, slot: usize, idx: usize, _t: &Tunables) -> (Event, u16) {
     let v = grid.voxel(slot, idx);
     let mut nv = v;
-    let units = t.condense_quarter_units.max(1) as u8;
     nv.species = Species::Water as u8;
-    nv.mass = (v.mass / 2).max(units).min(MASS_FULL);
+    nv.mass = v.mass.clamp(1, MASS_FULL);
     // Condensation releases the latent heat of vaporisation: the droplet is warm.
     nv.temp = clamp_temp(v.temp as i32 + 4);
     nv.flags |= flags::ACTIVE | flags::MOVED;
