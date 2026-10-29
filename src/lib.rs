@@ -1055,15 +1055,20 @@ mod tests {
         out
     }
 
-    /// A one-block-wide shaft with stone walls and a stone floor, filled with
-    /// water from `y = 2` up to `top`. Chunks are created on demand, so a shaft
-    /// can cross the 16-block chunk border — which is what makes it deep enough
-    /// to hurt a diver.
+    /// A one-block-wide shaft filled with water from `y = 2` up to `top`,
+    /// walled and floored in bedrock. Chunks are created on demand, so the shaft
+    /// crosses the 16-block chunk border — which is what makes it deep enough to
+    /// hurt a diver.
+    ///
+    /// The walls are bedrock on purpose: a 40-block column really does burst a
+    /// stone dam (yield 35 m, see `hydro::fracture`), and a test about
+    /// barotrauma should not silently turn into a test about the dam failing.
     fn water_shaft(s: &mut Sim, x: i32, z: i32, top: i32) {
-        s.set_block(x, 1, z, Voxel::stone(20));
+        let bedrock = Voxel::new(Species::Bedrock, 20);
+        s.set_block(x, 1, z, bedrock);
         for y in 1..=top + 1 {
             for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                s.set_block(x + dx, y, z + dz, Voxel::stone(20));
+                s.set_block(x + dx, y, z + dz, bedrock);
             }
         }
         for y in 2..=top {
