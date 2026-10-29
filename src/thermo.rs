@@ -308,6 +308,11 @@ pub fn tick_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Cell
         changed = true;
         event = Some(ev);
         pressure_spike = spike;
+        // A phase change rewrites the cell's density, mass and temperature at
+        // once, so every neighbour has to re-evaluate (a frozen neighbour is a
+        // wall, a thawed one is a slope). Transitions are rare; the broadcast
+        // costs nothing in a settled world.
+        grid.wake_with_neighbors(slot, idx);
     }
 
     // ---- 4. convective nucleation --------------------------------------

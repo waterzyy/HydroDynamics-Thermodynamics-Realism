@@ -551,10 +551,12 @@ pub fn update_pressure(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -
     nv.pressure = new_p;
     nv.flags |= flags::ACTIVE;
     grid.put(slot, idx, nv);
-    // Pressure changes must propagate down the column.
-    if let Some(n) = grid.neighbor(slot, idx, DIR_NEG_Y) {
-        grid.wake_next(n.chunk, n.index);
-    }
+    // A new head changes the *neighbours'* decisions as much as this cell's:
+    // the cell below inherits the value, and every horizontal neighbour now
+    // compares its own head against a different number. Wake the whole
+    // neighbourhood, otherwise a cell that settled while the head was wrong
+    // never gets a second look and the water stops mid-slope.
+    grid.wake_with_neighbors(slot, idx);
     true
 }
 
