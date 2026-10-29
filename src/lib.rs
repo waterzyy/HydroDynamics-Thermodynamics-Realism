@@ -97,7 +97,7 @@ use crate::thermo::Event;
 
 /// Semantic version of the mod, embedded in the generated book and reported by
 /// [`horizon_api_version`]'s sibling export.
-pub const VERSION: &str = "1.4.0";
+pub const VERSION: &str = "1.5.0";
 
 /// ABI revision. The host refuses to load a module with a different major.
 pub const API_VERSION: u32 = 0x0001_0004;

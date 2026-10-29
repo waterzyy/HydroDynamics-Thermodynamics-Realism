@@ -4,3 +4,5 @@ Cargo.lock
 *.wasm
 /dist
 .DS_Store
+
+*.hmod

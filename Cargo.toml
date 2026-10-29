@@ -1,6 +1,6 @@
 [package]
 name = "hydrodynamics"
-version = "1.0.0"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.72"
 description = "HydroDynamics & Thermodynamics Realism — fluid / thermal / phase-transition core for the Horizon voxel engine (wasm32-unknown-unknown)"

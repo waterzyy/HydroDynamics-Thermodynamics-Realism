@@ -11,7 +11,7 @@
 [mod]
 id            = "hydrodynamics"
 name          = "HydroDynamics & Thermodynamics Realism"
-version       = "1.4.0"
+version       = "1.5.0"
 api           = "horizon-mod/1.4"
 authors       = ["Horizon Physics Team"]
 license       = "MIT OR Apache-2.0"

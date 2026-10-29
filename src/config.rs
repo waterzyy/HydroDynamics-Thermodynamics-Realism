@@ -183,7 +183,7 @@ impl Tunables {
         quench_hot_c: 60,
         ignition_c: 320,
         basalt_c: 700,
-        book_version: "1.4.0",
+        book_version: "1.5.0",
         give_book_on_join: true,
         give_book_on_respawn: true,
     };

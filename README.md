@@ -7,6 +7,10 @@
 A fluid, thermal and phase-transition core for the **Horizon** voxel engine,
 compiled to `wasm32-unknown-unknown` as a `cdylib`.
 
+> **Latest release: [v1.5.0](https://github.com/waterzyy/vibecode-test/releases/latest)** —
+> download `hydrodynamics-1.5.0.hmod`, drop it into the world's `mods/` directory,
+> restart. See [Install](#install) for the archive layout.
+
 It replaces vanilla's "flowing water levels" with a mass- and energy-conserving
 cellular automaton: water finds its level through a hydraulic head gradient,
 pressure grows with depth, magma boils pools into steam columns, steam condenses
@@ -35,7 +39,9 @@ a settled world costs **zero CPU**.
   «Atlas of Fluid Physics» (NBT для `written_book` + JSON-двойник) и выдаёт её
   при первом входе и респавне.
 * **Проверка.** `cargo test` — 160 тестов (юнит + интеграционные сценарии),
-  `wasm` собирается в ~95 КБ без единой внешней зависимости.
+  `wasm` собирается в ~115 КБ без единой внешней зависимости.
+* **Установка.** Готовый `.hmod` лежит в [релизах](https://github.com/waterzyy/vibecode-test/releases/latest):
+  это обычный ZIP с манифестом, модулем, README, CHANGELOG и `SHA256SUMS`.
 
 ---
 
@@ -248,6 +254,30 @@ simulation is the thing that is broken.
 
 ---
 
+## Install
+
+Download `hydrodynamics-1.5.0.hmod` from the
+[releases page](https://github.com/waterzyy/vibecode-test/releases) and put it in
+the world's `mods/` directory (or install it from the in-game mod browser), then
+restart the server. A `.hmod` is a flat ZIP:
+
+```
+hydrodynamics-1.5.0.hmod
+├── horizon-mod.toml    manifest — [wasm].file already points at the packaged artifact
+├── hydrodynamics.wasm  the module, zero host imports, ~115 KiB
+├── README.md           this document
+├── CHANGELOG.md        what changed
+└── SHA256SUMS          checksums of everything above
+```
+
+The checksum printed in the release notes is the SHA-256 of the `.hmod` itself,
+so a mirror can be verified with `sha256sum -c`:
+
+```bash
+sha256sum hydrodynamics-1.5.0.hmod     # compare with the release page
+unzip -p hydrodynamics-1.5.0.hmod SHA256SUMS | sha256sum -c -
+```
+
 ## Build and test
 
 ```bash
@@ -266,18 +296,44 @@ physics suite runs natively, no WASM runtime needed). Release profile: `opt-leve
 → **~115 KiB** of WASM.
 
 CI (`.github/workflows/ci.yml`) runs clippy, the full test suite, `cargo doc`, a
-`wasm32-unknown-unknown` release build and a 2 MiB artifact-size gate.
+`wasm32-unknown-unknown` release build, a 2 MiB artifact-size gate and
+`scripts/check-exports.py`, which parses the built module's export section and
+fails when it stops exporting a symbol the manifest promises.
+
+### Packaging a release
+
+```bash
+./scripts/build-wasm.sh                                     # cargo build --release --target wasm32-...
+python3 scripts/package.py \
+    --wasm target/wasm32-unknown-unknown/release/hydrodynamics.wasm \
+    --out  dist/hydrodynamics-1.5.0.hmod
+python3 scripts/release-notes.py --version 1.5.0 \
+    --hmod dist/hydrodynamics-1.5.0.hmod --out dist/release-notes.md
+```
+
+Publishing is tag-driven — `.github/workflows/release.yml` builds, tests,
+verifies and attaches the `.hmod`:
+
+```bash
+git tag -a v1.5.0 -m "HydroDynamics 1.5.0"
+git push origin v1.5.0
+```
+
+The job refuses to publish when the tag and `[mod].version` disagree, so a
+release can never be labelled with a version the binary does not carry.
 
 ## Repository layout
 
 ```
 horizon-mod.toml     mod manifest: fluids, gases, blocks, the book, events, tunables
 Cargo.toml           cdylib + rlib, zero dependencies
+CHANGELOG.md         release history (the release notes are generated from it)
 rust-toolchain.toml  stable + wasm32-unknown-unknown
 src/                 the engine (see the module table above)
 tests/physics.rs     end-to-end scenarios driven through the public API only
 docs/                illustration briefs for the Atlas
-scripts/             wasm build helper
+scripts/             wasm build, .hmod packaging, release notes, export check
+.github/workflows/   CI, release, and the diagnostics jobs
 ```
 
 ---
