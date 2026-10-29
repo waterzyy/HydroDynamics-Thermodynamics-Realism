@@ -11,7 +11,11 @@
 //! 2. **Levelling by hydraulic-head descent** — otherwise mass moves
 //!    horizontally towards the neighbour with the lower free surface, i.e. the
 //!    neighbour whose own mass plus the column above it is smaller (see
-//!    [`try_level`] and [`hydraulic_head`]). Only head-reducing transfers are
+//!    [`try_level`] and [`hydraulic_head`]). Two sub-resolution exceptions break
+//!    the one-eighth deadlock: a supported cell may pour its last unit onto bare
+//!    rock, and a unit may *roll* down a one-eighth step when the cell beyond
+//!    that step is lower still. Both are one-way ratchets, so neither can
+//!    oscillate. Only head-reducing transfers are
 //!    allowed and each one is capped at half the head difference, so the pair
 //!    converges monotonically, never overshoots and never cycles: a levelled
 //!    body of water is a genuine fixed point and its chunk can go to sleep.
@@ -903,6 +907,45 @@ mod tests {
         );
         // The tower must have collapsed: its column is a puddle now.
         assert!(column(&g, 3, 3) < 4 * MASS_FULL as u32);
+    }
+
+    /// A staircase of one-unit steps is a fixed point of the pure `q >= 2`
+    /// rule: no single pair has two units of head, so the film would freeze
+    /// mid-slope. Real water keeps running down a slope, so the kernel lets a
+    /// unit *roll* into a one-unit-lower neighbour whenever that neighbour can
+    /// pass it on. The staircase must therefore drain off its own end.
+    #[test]
+    fn a_one_unit_staircase_keeps_creeping_downhill() {
+        let (mut g, t) = world();
+        let s = slot(&g);
+        for x in 0..16 {
+            for z in 0..16 {
+                g.put(s, dirs::index(x, 1, z), Voxel::stone(20));
+            }
+        }
+        // x = 3..=10 hold 8, 7, 6, …, 1 and x = 11 is bare rock.
+        for (step, x) in (3..=10).enumerate() {
+            let mut w = Voxel::water(20);
+            w.mass = 8 - step as u8;
+            g.put(s, dirs::index(x, 2, 8), w);
+        }
+        let before = g.total_mass();
+        for _ in 0..40 {
+            for x in 2..14 {
+                tick_cell(&mut g, s, dirs::index(x, 2, 8), &t);
+            }
+        }
+        assert_eq!(g.total_mass(), before, "the creep must conserve mass");
+        assert!(
+            column(&g, 11, 8) > 0,
+            "the staircase must run off its end, not freeze: x11 = {}",
+            column(&g, 11, 8)
+        );
+        assert!(
+            column(&g, 3, 8) < 8,
+            "the tall end must give water away: {}",
+            column(&g, 3, 8)
+        );
     }
 
     #[test]

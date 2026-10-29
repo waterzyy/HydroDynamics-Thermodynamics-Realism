@@ -252,9 +252,16 @@ compromise instead of a global solve:
   point, but water will not flow through it: doing so needs an incompressible
   global solve. The Atlas therefore tells players to build culverts **two blocks
   high** — which is what real dams do anyway.
-* **A single unit on bare rock is a settled film.** Without support from above,
-  one eighth of a block cannot push itself sideways; that is the resolution floor
-  that keeps settled puddles asleep instead of letting single units roam forever.
+* **The 1/8-block resolution floor.** Mass moves in eighths, so a pair of cells
+  that differ by exactly one eighth is a *discrete* fixed point even though a
+  real liquid would keep levelling. The kernel breaks exactly one of those ties —
+  a unit may roll **downhill** into a one-unit-lower neighbour when the cell
+  beyond it is lower still (an energy-neutral roll that can never be played
+  backwards) — and refuses all the others. That is why one unit on bare rock is
+  a settled film instead of a cell that roams forever, and why a breached dam
+  drains hard for a while and then quiesces with a very shallow sheet outside
+  rather than equalising all the way: liquid never climbs, so an open plain
+  floods one block deep, not to the height of the reservoir.
 * **Rock products leave the water tally.** Water/ice/steam/snow are a closed
   cycle and are conserved exactly (`Chunk::total_mass`); lava solidifying into
   obsidian, pumice or basalt is a phase change into *terrain*, and solids carry
