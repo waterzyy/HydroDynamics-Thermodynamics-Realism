@@ -7,13 +7,13 @@
 //! order:
 //!
 //! 1. **Gravity** — if the cell below can accept mass, everything that fits
-//!    falls. This is what makes a breach in a dam bottom *empty* in a few ticks.
-//! 2. **Levelling** — otherwise, mass flows horizontally into any neighbour that
-//!    holds *less* mass, by `(m_self − m_other) / 2`. Because the rule only ever
-//!    halves a *difference*, the levels converge to a fixed point instead of
-//!    sloshing: that fixed point is exactly the law of communicating vessels.
-//!    A U-tube reaches `|Δh| ≤ 1/8 block` and then stops — which is what lets the
-//!    chunk fall asleep.
+//!    falls. This is what empties a breached dam in a few ticks.
+//! 2. **Levelling by energy descent** — otherwise mass moves horizontally to the
+//!    neighbour that minimises the potential energy of the pair (see
+//!    [`try_level`]). Because only strictly energy-reducing moves are allowed,
+//!    the total energy is a monotone decreasing quantity: the automaton cannot
+//!    cycle, so a levelled body of water is a genuine fixed point and its chunk
+//!    can go to sleep.
 //! 3. **Density inversion** — a gas under a liquid (or a liquid over a gas) swaps
 //!    with it. Steam therefore bubbles up through water while the water sinks,
 //!    with exact mass conservation and no special-casing.
@@ -23,8 +23,22 @@
 //! 5. **Fracture** — a pressurised cell grinds down brittle neighbours (glass,
 //!    planks, leaves) using the yield pressures from the material database.
 //!
-//! Every step is integer, allocation-free and branch-predictable. No `sqrt` in
-//! the flow path: the only root is in [`torricelli_velocity`], which is computed
+//! # Communicating vessels
+//!
+//! Two vessels joined by a *culvert with free space* (any normal doorway, tunnel
+//! or open channel) equalise their levels: the surplus side drains through the
+//! free surface until the energy of the pair stops decreasing, and then the
+//! simulation quiesces.
+//!
+//! A gallery that is completely plugged — one block high, packed to 8/8 along
+//! its whole length — transmits *pressure* (it drives jets, fracture and the
+//! boiling point) but no *mass*: moving a unit through it would need a global
+//! incompressible solve, and a local automaton cannot do that without either an
+//! energy drift or an oscillation. The Atlas therefore tells the player to build
+//! culverts **two blocks high**, which is what real dams do anyway.
+//!
+//! Every step is integer, allocation-free and branch-predictable. There is no
+//! `sqrt` in the flow path: the only root is in [`torricelli_velocity`], computed
 //! lazily for entities standing in a jet, never per voxel per tick.
 
 use crate::config::Tunables;
@@ -125,43 +139,102 @@ pub fn cell_density(v: Voxel) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Pressure and elevation
+// ---------------------------------------------------------------------------
+//
+// `pressure` holds the hydrostatic pressure of a cell, i.e. the weight of the
+// water column *above* it, in units of `pressure_per_block` (250 Pa) per block
+// of water. It is maintained by a local recurrence
+//
+//   p[i] = p[above] + pressure_per_block · mass[i]/8
+//
+// which costs one neighbour read per active cell, converges to the exact
+// hydrostatic profile while a basin fills, and then stops changing — a settled
+// body of water stops touching its pressure field, which is what lets the chunk
+// fall asleep.
+
+/// Absolute world elevation of a local voxel.
+#[inline]
+#[must_use]
+pub fn elevation(grid: &Grid, slot: usize, idx: usize) -> i32 {
+    grid.chunks[slot].coords[1] * dirs::CHUNK_SIZE as i32 + dirs::unindex(idx).1 as i32
+}
+
+/// Elevation of the top of the fluid a cell holds (its local surface).
+#[inline]
+#[must_use]
+pub fn surface(v: Voxel, y: i32, t: &Tunables) -> i32 {
+    let perp = t.pressure_per_block as i32;
+    if v.is_fluid() && v.mass > 0 {
+        y * perp + perp * v.mass as i32 / MASS_FULL as i32
+    } else {
+        y * perp
+    }
+}
+
+/// The same surface, expressed as a pressure above sea level.
+#[inline]
+#[must_use]
+pub fn surface_pressure(v: Voxel, y: i32, t: &Tunables) -> u16 {
+    let perp = t.pressure_per_block as i32;
+    let p = t.sea_level_pressure as i32 + surface(v, y, t) - perp * y;
+    if p < 0 {
+        0
+    } else if p > u16::MAX as i32 {
+        u16::MAX
+    } else {
+        p as u16
+    }
+}
+
+// ---------------------------------------------------------------------------
 // One cell, one tick
 // ---------------------------------------------------------------------------
 
 /// Advances a single fluid cell.
 pub fn tick_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> FlowResult {
     let v = grid.voxel(slot, idx);
-    if v.class() != Class::Liquid && v.class() != Class::Gas {
+    if !v.is_liquid() && !v.is_gas() {
         return FlowResult::idle();
     }
     if v.mass == 0 || v.has(flags::SOURCE) {
         // A source never moves; it only feeds its neighbours.
+        return FlowResult::idle();
+    }
+
+    // ---- 0. refresh the hydrostatic pressure ------------------------------
+    let head_changed = update_pressure(grid, slot, idx, t);
+    let me = grid.voxel(slot, idx);
+
+    // ---- 1. gases are compressible: they rise and spread -------------------
+    if me.is_gas() {
+        if let Some(res) = try_rise(grid, slot, idx, t) {
+            return res;
+        }
+        if let Some(res) = try_spread(grid, slot, idx, t) {
+            return res;
+        }
         return FlowResult {
-            changed: false,
-            active: false,
+            changed: head_changed,
+            active: head_changed,
             moved: 0,
             dir: None,
         };
     }
 
-    // ---- 1. gravity / buoyancy ------------------------------------------
-    if v.is_gas() {
-        if let Some(res) = try_rise(grid, slot, idx, t) {
-            return res;
-        }
-    } else if let Some(res) = try_fall(grid, slot, idx, t) {
+    // ---- 2. gravity --------------------------------------------------------
+    if let Some(res) = try_fall(grid, slot, idx, t) {
         return res;
     }
 
-    // ---- 2. levelling ----------------------------------------------------
+    // ---- 3. levelling (energy descent) ------------------------------------
     if let Some(res) = try_level(grid, slot, idx, t) {
         return res;
     }
 
-    // ---- 3. nothing moved: settle this cell (unless it is boiling etc.) ----
     FlowResult {
-        changed: false,
-        active: v.flags & (flags::BUBBLE | flags::FLASHING) != 0,
+        changed: head_changed,
+        active: head_changed || me.flags & (flags::BUBBLE | flags::FLASHING) != 0,
         moved: 0,
         dir: None,
     }
@@ -181,7 +254,6 @@ fn try_fall(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<Fl
     }
     if !same_liquid(below, me) && !below.is_empty_like() {
         // Density inversion (a liquid over a gas): swap the two cells wholesale.
-        // This is what makes a bubble rise through water while the water sinks.
         return Some(density_swap(grid, (slot, idx), n, DIR_NEG_Y));
     }
     let amount = me.mass.min(room);
@@ -206,7 +278,7 @@ fn try_rise(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<Fl
     if room == 0 {
         return None;
     }
-    if room == 1 && above.class() == Class::Liquid {
+    if room == 1 && above.is_liquid() {
         return Some(density_swap(grid, (slot, idx), n, DIR_POS_Y));
     }
     let amount = me.mass.min(room);
@@ -222,11 +294,63 @@ fn try_rise(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<Fl
     })
 }
 
-/// Levelling: share mass with the emptiest horizontal neighbour.
+/// A gas expands sideways into any emptier cell (gases are compressible, so the
+/// energy argument that forbids a horizontal *liquid* swap does not apply).
+fn try_spread(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
+    let me = grid.voxel(slot, idx);
+    let mut best: Option<(Dir, Neighbor, u8)> = None;
+    let mut best_mass = me.mass;
+    for d in HORIZONTAL {
+        let n = grid.neighbor(slot, idx, d)?;
+        let nv = grid.chunks[n.chunk].get(n.index);
+        if nv.is_liquid() {
+            continue; // gases only rise through liquids, never sideways
+        }
+        if room_for(nv, me) == 0 {
+            continue;
+        }
+        if nv.mass < best_mass {
+            best_mass = nv.mass;
+            best = Some((d, n, nv.mass));
+        }
+    }
+    let (d, n, nb_mass) = best?;
+    let diff = me.mass.saturating_sub(nb_mass);
+    if diff < 2 {
+        return None;
+    }
+    let amount = (diff / 2).min(me.mass).max(1);
+    let moved = pour(grid, (slot, idx), n, amount, d)?;
+    Some(FlowResult {
+        changed: true,
+        active: true,
+        moved,
+        dir: Some(d),
+    })
+}
+
+/// Levelling by **energy descent**.
+///
+/// The potential energy of a cell holding `m` units at elevation `y` is
+/// `16·y·m + m²` (water fills a cell from the bottom, so the column inside the
+/// cell contributes `m²/16`). Moving `Δm` from `a` to `b` changes the total by
+///
+/// ```text
+/// ΔE = 2Δm · ( 8(y_b − y_a) + m_b − m_a + Δm )
+/// ```
+///
+/// so the transfer that minimises the energy is `Δm* = (8·(y_a − y_b) + m_a − m_b)/2`.
+/// Only strictly negative `ΔE` moves are allowed, which makes the total energy a
+/// **monotone decreasing** quantity: the automaton cannot cycle, so a settled
+/// puddle is a true fixed point and its chunk can sleep. It also gives the
+/// correct hydrostatics for free — a downward move is always downhill in energy,
+/// a horizontal one only levels, and an upward one is impossible without the
+/// pressure field.
 fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
     let me = grid.voxel(slot, idx);
-    let mut best: Option<(Dir, Neighbor, Voxel)> = None;
-    let mut best_mass = me.mass;
+    let y = elevation(grid, slot, idx);
+    let rate_cap = ((t.flow_rate as u16 * t.horizontal_rate_eighths as u16) / 8).max(1) as u8;
+    let mut best: Option<(Dir, Neighbor, u8)> = None;
 
     for d in HORIZONTAL {
         let n = match grid.neighbor(slot, idx, d) {
@@ -238,46 +362,33 @@ fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<F
         if room == 0 {
             continue;
         }
-        // A gas spreads into any emptier cell; a liquid only flows to an emptier
-        // cell. Cross-substance moves are resolved *vertically* (density
-        // inversion in `try_fall`/`try_rise`), never horizontally: a horizontal
-        // swap would flip back and forth forever and keep the chunk awake.
-        let heads_up = nv.mass < me.mass || nv.class() == Class::Void;
-        if !heads_up {
+        if nv.is_liquid() && !same_liquid(nv, me) {
+            continue; // never mix water and lava
+        }
+        if !nv.is_empty_like() && !same_liquid(nv, me) {
+            continue; // different substances only exchange vertically
+        }
+        // A single unit never drifts sideways into empty space: the move would be
+        // free to reverse and the two cells would trade it forever.
+        if nv.is_empty_like() && me.mass < 2 {
             continue;
         }
-        if nv.mass < best_mass {
-            best_mass = nv.mass;
-            best = Some((d, n, nv));
+        // Horizontal neighbours sit at the same elevation, so `dy == 0`.
+        let dy = y - elevation(grid, n.chunk, n.index);
+        let want = (8 * dy + me.mass as i32 - nv.mass as i32) / 2;
+        if want < 1 {
+            continue;
+        }
+        let amount = (want as u8).min(room).min(me.mass).min(rate_cap);
+        if amount == 0 {
+            continue;
+        }
+        if best.is_none() || amount > best.as_ref().map_or(0, |b| b.2) {
+            best = Some((d, n, amount));
         }
     }
 
-    let (d, n, nv) = best?;
-    if nv.class() == Class::Liquid && !same_liquid(nv, me) {
-        return None; // never mix water and lava
-    }
-    if !nv.is_empty_like() && !same_liquid(nv, me) {
-        return None; // different substances only exchange vertically
-    }
-
-    // Flow rate: half of the difference, never more than the free volume, further
-    // limited by the configured horizontal rate.
-    //
-    // A difference of a single unit is deliberately *not* moved: moving it would
-    // just swap the imbalance on the next tick (8↔7↔8…) and keep the chunk awake
-    // forever. Stopping at |Δ| ≤ 1 makes the levelled state a true fixed point.
-    let diff = me.mass.saturating_sub(nv.mass);
-    if diff < 2 {
-        return None;
-    }
-    let mut amount = (diff / 2).max(1);
-    let rate_cap = ((t.flow_rate as u16 * t.horizontal_rate_eighths as u16) / 8.max(1)) as u8;
-    amount = amount.min(rate_cap.max(1));
-    amount = amount.min(room_for(nv, me));
-    amount = amount.min(me.mass);
-    if amount == 0 {
-        return None;
-    }
+    let (d, n, amount) = best?;
     let moved = pour(grid, (slot, idx), n, amount, d)?;
     Some(FlowResult {
         changed: true,
@@ -393,14 +504,14 @@ fn mix_temp(dst: Voxel, src: Voxel, amount: u8) -> crate::units::Temp {
 // Hydrostatic pressure
 // ---------------------------------------------------------------------------
 
-/// Recomputes the hydrostatic head of one cell from the column above it.
+/// Recomputes the hydrostatic pressure of one cell from the column above it.
 ///
-/// `p[i] = p[above] + ρ·g·(mass[i] / 8)`
+/// `p[i] = p[above] + ρg·(mass[i]/8)`
 ///
 /// The recurrence is local, so it costs one neighbour read per active cell and
-/// needs no column scan. Applied repeatedly while the basin fills, it converges
-/// to the exact hydrostatic profile — and because it converges to a *fixed
-/// point*, a settled basin stops changing pressure and its chunk can sleep.
+/// needs no column scan. Applied repeatedly while a basin fills it converges to
+/// the exact hydrostatic profile — and because it converges to a *fixed point*,
+/// a settled basin stops changing pressure and its chunk can sleep.
 pub fn update_pressure(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> bool {
     let v = grid.voxel(slot, idx);
     if !v.is_fluid() || v.mass == 0 {
@@ -408,10 +519,6 @@ pub fn update_pressure(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -
     }
     let from_above = match grid.neighbor_voxel(slot, idx, DIR_POS_Y) {
         Some(a) if a.is_fluid() && a.mass > 0 => a.pressure as u32,
-        Some(a) if a.class() == Class::Solid => {
-            // A solid roof is not water: the column stops here.
-            t.sea_level_pressure as u32
-        }
         _ => t.sea_level_pressure as u32,
     };
     let head = from_above + (t.pressure_per_block as u32 * v.mass as u32) / MASS_FULL as u32;
@@ -695,11 +802,52 @@ mod tests {
             }
         }
         assert_eq!(g.total_mass(), before, "levelling must not create mass");
-        let a = column(&g, 3, 3);
-        let b = column(&g, 8, 3);
-        assert!(column(&g, 8, 3) > 0, "water must have spread: {a} vs {b}");
-        // The tower must have lost a lot of its water.
-        assert!(column(&g, 3, 3) < 6 * MASS_FULL as u32);
+        assert!(
+            column(&g, 8, 3) > 0,
+            "water must have spread across the floor: {} vs {}",
+            column(&g, 3, 3),
+            column(&g, 8, 3)
+        );
+        // The tower must have collapsed: its column is a puddle now.
+        assert!(column(&g, 3, 3) < 4 * MASS_FULL as u32);
+    }
+
+    #[test]
+    fn a_settled_puddle_stops_changing() {
+        let (mut g, t) = world();
+        let s = slot(&g);
+        for x in 0..16 {
+            for z in 0..16 {
+                g.put(s, dirs::index(x, 1, z), Voxel::stone(20));
+            }
+        }
+        for y in 2..6 {
+            for x in 4..8 {
+                g.put(s, dirs::index(x, y, 4), Voxel::water(20));
+            }
+        }
+        let before = g.total_mass();
+        let mut run = |g: &mut Grid| -> usize {
+            let mut changed = 0;
+            for y in 2..10 {
+                for z in 0..10 {
+                    for x in 0..12 {
+                        let idx = dirs::index(x, y, z);
+                        if tick_cell(g, s, idx, &t).changed {
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+            changed
+        };
+        for _ in 0..200 {
+            run(&mut g);
+        }
+        // Energy descends monotonically, so the automaton must reach a fixed point.
+        let last = run(&mut g);
+        assert_eq!(last, 0, "a settled puddle must stop moving");
+        assert_eq!(g.total_mass(), before);
     }
 
     #[test]
@@ -708,40 +856,53 @@ mod tests {
         let s = slot(&g);
         // Floor.
         for x in 0..16 {
-            for z in 0..16 {
+            for z in 3..6 {
                 g.put(s, dirs::index(x, 1, z), Voxel::stone(20));
             }
         }
-        // Wall between the two arms, with a gap at the bottom (the U-bend).
-        for y in 3..12 {
-            for z in 0..10 {
-                g.put(s, dirs::index(7, y, z), Voxel::stone(20));
+        // Side walls of the channel at z=3 and z=5.
+        for x in 1..14 {
+            for y in 2..12 {
+                g.put(s, dirs::index(x, y, 3), Voxel::stone(20));
+                g.put(s, dirs::index(x, y, 5), Voxel::stone(20));
             }
         }
-        // Fill the left arm.
-        for y in 2..10 {
-            for z in 2..5 {
-                g.put(s, dirs::index(3, y, z), Voxel::water(20));
+        // Dam between the two vessels, with a two-block-high culvert at y=2..3.
+        for x in 6..10 {
+            for y in 4..12 {
+                g.put(s, dirs::index(x, y, 4), Voxel::stone(20));
+            }
+        }
+        // End walls of the vessels.
+        for y in 2..12 {
+            for z in 3..6 {
+                g.put(s, dirs::index(2, y, z), Voxel::stone(20));
+                g.put(s, dirs::index(13, y, z), Voxel::stone(20));
+            }
+        }
+        // Fill the left vessel six blocks deep.
+        for y in 2..8 {
+            for x in 3..6 {
+                g.put(s, dirs::index(x, y, 4), Voxel::water(20));
             }
         }
         let before = g.total_mass();
-        for _ in 0..1_000 {
-            for y in 2..14 {
-                for z in 0..10 {
-                    for x in 0..14 {
-                        tick_cell(&mut g, s, dirs::index(x, y, z), &t);
-                    }
+        for _ in 0..600 {
+            for y in 2..12 {
+                for x in 3..13 {
+                    tick_cell(&mut g, s, dirs::index(x, y, 4), &t);
                 }
             }
         }
-        let left = column(&g, 3, 3) as i32;
-        let right = column(&g, 10, 3) as i32;
         assert_eq!(g.total_mass(), before, "communicating vessels conserve mass");
-        assert!(right > 0, "water must reach the second arm");
+        let left = column(&g, 4, 4) as i32;
+        let right = column(&g, 11, 4) as i32;
+        assert!(right > 0, "water must reach the second vessel");
         assert!(
             (left - right).abs() <= 2 * MASS_FULL as i32,
-            "levels must equalise (within two blocks: {left} vs {right})"
+            "levels must equalise within two blocks: {left} vs {right}"
         );
+        assert!(left < 6 * MASS_FULL as i32, "the filled arm must drain");
     }
 
     #[test]

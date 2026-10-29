@@ -460,6 +460,10 @@ pub extern "C" fn horizon_on_player_join(_player: u32, is_respawn: u32) -> u32 {
 
 /// Pointer to the book NBT blob in linear memory.
 ///
+/// The buffer belongs to the simulation and stays valid until the book is
+/// regenerated (a config change, another join grant) or the module reloads — not
+/// merely until the next tick, so the host may copy it lazily.
+///
 /// The buffer is owned by the simulation and stays valid until the book is
 /// regenerated (a config change) or the module is reloaded — **not** until the
 /// next tick, so the host may copy it lazily.
