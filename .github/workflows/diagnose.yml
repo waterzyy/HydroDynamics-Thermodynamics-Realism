@@ -22,7 +22,9 @@ jobs:
             echo "### cargo check (short)"
             cargo check --all-targets --message-format=short 2>&1 | grep -E "error|warning" | grep -v "^ *Compiling" | head -120
             echo "### cargo test"
-            cargo test --all-targets 2>&1 | grep -E "^(test |error|failures:|test result)" | head -120
+            cargo test --all-targets 2>&1 | grep -E "^(test result|failures:)" | head -40
+            echo "### failures"
+            cargo test --all-targets 2>&1 | grep -B2 -A8 "panicked at" | head -150
             echo "### wasm build"
             cargo build --release --target wasm32-unknown-unknown --message-format=short 2>&1 | tail -30
             ls -l target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || true
