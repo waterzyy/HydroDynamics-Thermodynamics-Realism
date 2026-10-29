@@ -34,7 +34,7 @@ a settled world costs **zero CPU**.
 * **Атлас гидролога.** `src/book.rs` генерирует иллюстрированную книгу
   «Atlas of Fluid Physics» (NBT для `written_book` + JSON-двойник) и выдаёт её
   при первом входе и респавне.
-* **Проверка.** `cargo test` — 146 тестов (юнит + интеграционные сценарии),
+* **Проверка.** `cargo test` — 149 тестов (юнит + интеграционные сценарии),
   `wasm` собирается в ~95 КБ без единой внешней зависимости.
 
 ---
@@ -210,7 +210,7 @@ Events: `1 freeze`, `2 melt`, `3 boil`, `4 condense`, `5 quench (payload = produ
 ## Build and test
 
 ```bash
-cargo test --all-targets              # 146 tests: unit + end-to-end scenarios
+cargo test --all-targets              # 149 tests: unit + end-to-end scenarios
 cargo clippy --all-targets
 cargo doc --no-deps
 
