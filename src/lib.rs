@@ -741,14 +741,24 @@ mod tests {
         s.grid.put(sl, idx, w);
         s.grid.put(sl, dirs::index(4, 5, 4), Voxel::AIR);
         s.grid.wake_all(sl);
+        // The vapour does not linger in the cell directly above the cauldron:
+        // it is created there and the very same tick's sweep (the cell was
+        // already queued) lets it rise. So look at the whole column above the
+        // source, which is what the player actually sees.
         let mut saw_steam = false;
         for _ in 0..10 {
             s.tick();
-            if s.get_block(4, 5, 4).map(|v| v.species()) == Some(Species::Steam) {
-                saw_steam = true;
+            for y in 5..16 {
+                if s.get_block(4, y, 4).map(|v| v.species()) == Some(Species::Steam) {
+                    saw_steam = true;
+                }
             }
         }
-        assert!(saw_steam, "steam must appear above boiling water");
+        assert!(
+            saw_steam,
+            "boiling water must raise a steam column above it (mass left: {})",
+            s.grid.total_mass()
+        );
         // Drain and confirm at least one Boil event was reported.
         let mut boiled = false;
         while let Some(ev) = s.events.pop() {

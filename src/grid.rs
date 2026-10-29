@@ -35,7 +35,7 @@ use core::mem::size_of;
 
 use crate::dirs::{
     self, Dir, BORDER_MASKS, CHUNK_SIZE, CHUNK_VOLUME, DIR_NEG_X, DIR_NEG_Y, DIR_NEG_Z, DIR_POS_X,
-    DIR_POS_Y, DIR_POS_Z,
+    DIR_POS_Y,
 };
 use crate::units::{chunk_seed, Mass, Temp};
 use crate::voxel::{flags, Species, Voxel};

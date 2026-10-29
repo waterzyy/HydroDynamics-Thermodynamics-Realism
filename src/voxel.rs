@@ -274,7 +274,7 @@ pub enum Class {
 /// Sources: CRC Handbook (thermal data), USGS basalt thermophysics, ASM Metals
 /// Reference (iron), and the Horizon engine block registry for the non-physical
 /// entries (`CompressedAir`, `Fire`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Material {
     /// Display name.
     pub name: &'static str,
