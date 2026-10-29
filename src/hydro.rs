@@ -388,6 +388,19 @@ fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<F
         let want = if q >= 2 {
             q / 2
         } else if q == 1 && nv.mass == 0 && supported {
+            // The supported ratchet: a cell that rests on a full block (or has
+            // water standing on it) may pour its last unit into bare rock.
+            1
+        } else if q == 1 && rolls_downhill(grid, n, nv, d) {
+            // The slope creep. A 1/8-block step is the smallest move the model
+            // can make, so a film that is one unit deep at the front and one
+            // unit deeper behind it is a *discrete* fixed point even though a
+            // real liquid would keep running. It is broken only in the
+            // downhill direction: the receiver must be able to pass the unit
+            // on, i.e. the next cell along the same axis is strictly lower.
+            // That makes the move a pure roll (the multiset of masses is
+            // unchanged, so no energy enters the system) and it can never be
+            // played backwards, so the film drains instead of oscillating.
             1
         } else {
             continue;
@@ -412,6 +425,27 @@ fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<F
         moved,
         dir: Some(d),
     })
+}
+
+/// `true` when a unit handed to `at` can continue on along `d`, i.e. the cell
+/// beyond it is the same liquid and at least one unit thinner.
+///
+/// This is the lookahead that turns a staircase into a slope that actually
+/// drains: without it the discrete hysteresis band (`q >= 2`) freezes every
+/// one-unit step, which is exactly what a half-empty dam looks like in a
+/// fixed-point automaton.
+#[inline]
+fn rolls_downhill(grid: &Grid, at: Neighbor, here: Voxel, d: Dir) -> bool {
+    if here.mass == 0 || !here.is_liquid() {
+        return false;
+    }
+    match grid.neighbor(at.chunk, at.index, d) {
+        Some(n) => {
+            let next = grid.chunks[n.chunk].get(n.index);
+            next.is_liquid() && same_liquid(next, here) && here.mass >= next.mass.saturating_add(1)
+        }
+        None => false,
+    }
 }
 
 /// Moves `amount` mass units from `src` into `dst`, honouring the target class.
