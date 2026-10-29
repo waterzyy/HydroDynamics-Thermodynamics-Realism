@@ -472,8 +472,14 @@ fn pour(grid: &mut Grid, src: (usize, usize), dst: Neighbor, amount: u8, dir: Di
 
     grid.put(src.0, src.1, ns);
     grid.put(dst.chunk, dst.index, nd);
-    grid.wake_next(src.0, src.1);
-    grid.wake_next(dst.chunk, dst.index);
+    // A transfer changes the head on *both* sides, so every cell that could
+    // flow into either of them has to re-evaluate — not just the two that
+    // moved. Without this broadcast the automaton stops at the first cell that
+    // had already settled: a reservoir would drain exactly one block next to a
+    // breach and then sleep forever, leaving a physically impossible head
+    // standing behind an idle wall of water.
+    grid.wake_with_neighbors(src.0, src.1);
+    grid.wake_with_neighbors(dst.chunk, dst.index);
     Some(amount)
 }
 
@@ -489,8 +495,9 @@ fn density_swap(grid: &mut Grid, a: (usize, usize), b: Neighbor, dir: Dir) -> Fl
     nb.aux = aux::with_flow(nb.aux, dirs::opposite(dir));
     grid.put(a.0, a.1, na);
     grid.put(b.chunk, b.index, nb);
-    grid.wake_next(a.0, a.1);
-    grid.wake_next(b.chunk, b.index);
+    // Same broadcast as `pour`: the swap changed the head of both cells.
+    grid.wake_with_neighbors(a.0, a.1);
+    grid.wake_with_neighbors(b.chunk, b.index);
     FlowResult {
         changed: true,
         active: true,
