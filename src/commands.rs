@@ -146,7 +146,7 @@ fn cmd_book(sim: &mut Sim, args: &[&str]) -> Result<String, String> {
     let title = atlas.title.clone();
     let mut s = format!(
         "\"granted\":{},\"title\":\"{}\",\"pages\":{},",
-        u32::from(granted),
+        granted,
         Escape(&title),
         pages
     );
@@ -412,7 +412,9 @@ mod tests {
         let reply = run(&mut s, "set 1 2 3 watre");
         assert!(reply.contains("is unknown"), "{reply}");
 
-        let reply = run(&mut s, "probe 1 2 3");
+        // The test world only has the chunk at the origin; anywhere else is
+        // "not resident", which must be an error message and not a panic.
+        let reply = run(&mut s, "probe 100 100 100");
         assert!(reply.contains("\"ok\":false"), "unloaded chunk: {reply}");
     }
 

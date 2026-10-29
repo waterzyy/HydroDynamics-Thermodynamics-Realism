@@ -1045,51 +1045,77 @@ mod tests {
         assert_eq!(temp, 1_050);
     }
 
+    /// Installs a simulation as the one the exported entry points see, runs `f`
+    /// and removes it again. The ABI works on the thread-local instance (that is
+    /// what the host loads), so a test of an export has to go through it.
+    fn with_installed<R>(s: Sim, f: impl FnOnce() -> R) -> R {
+        SIM.with(|cell| *cell.borrow_mut() = Some(s));
+        let out = f();
+        SIM.with(|cell| *cell.borrow_mut() = None);
+        out
+    }
+
+    /// A one-block-wide shaft with stone walls and a stone floor, filled with
+    /// water from `y = 2` up to `top`. Chunks are created on demand, so a shaft
+    /// can cross the 16-block chunk border — which is what makes it deep enough
+    /// to hurt a diver.
+    fn water_shaft(s: &mut Sim, x: i32, z: i32, top: i32) {
+        s.set_block(x, 1, z, Voxel::stone(20));
+        for y in 1..=top + 1 {
+            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                s.set_block(x + dx, y, z + dz, Voxel::stone(20));
+            }
+        }
+        for y in 2..=top {
+            s.set_block(x, y, z, Voxel::water(20));
+        }
+        for _ in 0..120 {
+            s.tick();
+        }
+    }
+
     #[test]
     fn entity_forces_are_packed_and_signed() {
         let mut s = sim();
-        let sl = slot(&s);
-        for y in 1..8 {
-            s.grid.put(sl, dirs::index(4, y, 4), Voxel::water(20));
-        }
-        s.grid.wake_all(sl);
-        for _ in 0..20 {
-            s.tick();
-        }
-        // A boat (700 kg/m³) floats, iron armour (2 100) sinks.
-        let wood = entities::EntityForces::from_u64(horizon_entity_forces(4, 4, 4, 700));
-        let iron = entities::EntityForces::from_u64(horizon_entity_forces(4, 4, 4, 2_100));
-        assert!(wood.accel > 0, "wood must be pushed up: {wood:?}");
-        assert!(iron.accel < 0, "armour must sink: {iron:?}");
-        assert_ne!(wood.flags & entities::force_flags::SUBMERGED, 0);
-        assert_ne!(wood.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
-        assert_eq!(iron.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
-        // Dry air: no buoyancy, breathable, no damage.
-        let air = entities::EntityForces::from_u64(horizon_entity_forces(12, 12, 12, 700));
-        assert_eq!(air.accel, 0);
-        assert_ne!(air.flags & entities::force_flags::BREATHABLE, 0);
-        assert_eq!(air.depth, 0);
+        water_shaft(&mut s, 4, 4, 12);
+        with_installed(s, || {
+            // A boat (700 kg/m³) floats, iron armour (2 100) sinks.
+            let wood = entities::EntityForces::from_u64(horizon_entity_forces(4, 6, 4, 700));
+            let iron = entities::EntityForces::from_u64(horizon_entity_forces(4, 6, 4, 2_100));
+            assert!(wood.accel > 0, "wood must be pushed up: {wood:?}");
+            assert!(iron.accel < 0, "armour must sink: {iron:?}");
+            assert_ne!(wood.flags & entities::force_flags::SUBMERGED, 0);
+            assert_ne!(wood.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
+            assert_eq!(iron.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
+            assert!(wood.drag > 0, "water must damp motion");
+
+            // Dry air: no buoyancy, breathable, no depth, no damage.
+            let air = entities::EntityForces::from_u64(horizon_entity_forces(12, 12, 12, 700));
+            assert_eq!(air.accel, 0);
+            assert_ne!(air.flags & entities::force_flags::BREATHABLE, 0);
+            assert_eq!(air.flags & entities::force_flags::SUBMERGED, 0);
+            assert_eq!(air.depth, 0);
+            assert_eq!(air.damage_per_second, 0);
+        });
     }
 
     #[test]
     fn entity_status_reports_depth_and_damage() {
         let mut s = sim();
-        let sl = slot(&s);
-        for y in 1..12 {
-            s.grid.put(sl, dirs::index(3, y, 3), Voxel::water(20));
-        }
-        s.grid.wake_all(sl);
-        for _ in 0..40 {
-            s.tick();
-        }
-        let word = horizon_entity_status(3, 4, 3);
-        let (depth, damage) = entities::EntityForces::from_status_u32(word);
-        assert!(depth >= 6, "depth must count the column above: {depth}");
-        assert!(damage > 0, "deep water must hurt: {damage}");
-        let (shallow_depth, shallow_damage) =
-            entities::EntityForces::from_status_u32(horizon_entity_status(3, 11, 3));
-        assert!(shallow_depth < depth, "{shallow_depth} vs {depth}");
-        assert_eq!(shallow_damage, 0, "a shallow dive is harmless");
+        // 40 blocks of water: well past the 24-block no-decompression limit, so
+        // the ABI has to surface a non-zero barotrauma figure.
+        water_shaft(&mut s, 4, 4, 40);
+        with_installed(s, || {
+            let (deep_depth, deep_damage) =
+                entities::EntityForces::from_status_u32(horizon_entity_status(4, 3, 4));
+            assert!(deep_depth >= 30, "depth must count the column: {deep_depth}");
+            assert!(deep_damage > 0, "37 blocks must hurt: {deep_damage}");
+
+            let (shallow_depth, shallow_damage) =
+                entities::EntityForces::from_status_u32(horizon_entity_status(4, 38, 4));
+            assert!(shallow_depth < deep_depth, "{shallow_depth} vs {deep_depth}");
+            assert_eq!(shallow_damage, 0, "a shallow dive is harmless");
+        });
     }
 
     #[test]
