@@ -637,30 +637,29 @@ fn tmp_dam_probe() {
         }
     }
     sim.grid.wake_all(slot);
-    let mut log = format!("initial column(4,8)={} total={}\n", column(&sim, slot, 4, 8), sim.grid.total_mass());
-    for t in 0..400 {
+    for _ in 0..150 {
         sim.tick();
-        if t % 25 == 0 || t > 380 {
-            let mut beyond = 0u32;
-            for x in 9..16 {
-                for y in 2..13 {
-                    for z in 0..16 {
-                        let v = get(&sim, slot, x, y, z);
-                        if v.species() == Species::Water {
-                            beyond += v.mass as u32;
-                        }
-                    }
-                }
-            }
-            log.push_str(&format!(
-                "t={t} col(4,8)={} col(7,8)={} beyond={} mass={} processed={}\n",
-                column(&sim, slot, 4, 8),
-                column(&sim, slot, 7, 8),
-                beyond,
-                sim.grid.total_mass(),
-                sim.grid.stats.processed
-            ));
-        }
     }
+    let mut log = String::new();
+    for z in 6..11 {
+        log.push_str(&format!("z={z}: "));
+        for x in 5..14 {
+            let v = get(&sim, slot, x, 2, z);
+            log.push_str(&format!("{:?}/{} ", v.species(), v.mass));
+        }
+        log.push('
+');
+    }
+    log.push_str("y-slice at x=8,z=8: ");
+    for y in 2..8 {
+        let v = get(&sim, slot, 8, y, 8);
+        log.push_str(&format!("y{y}={:?}/{} ", v.species(), v.mass));
+    }
+    log.push_str(&format!(
+        "\nasleep={} processed={} active={}",
+        sim.grid.chunks[slot].is_asleep(),
+        sim.grid.stats.processed,
+        sim.grid.front.len()
+    ));
     panic!("{log}");
 }
