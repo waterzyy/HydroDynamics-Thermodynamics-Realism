@@ -1,0 +1,96 @@
+name: Release
+
+# Publishing is tag-driven: `git push origin v1.5.0` builds, verifies and ships
+# the `.hmod`. Nothing is uploaded from a working tree, so the asset a player
+# downloads is always the artifact of a commit that passed the full suite.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build, e.g. v1.5.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Verify the tag matches the manifest version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          want="${tag#v}"
+          have=$(grep -E '^version +=' horizon-mod.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$tag manifest=$have"
+          test "$want" = "$have" || { echo "tag $tag does not match manifest version $have"; exit 1; }
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Build the module
+        run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Verify the artifact
+        run: |
+          wasm=target/wasm32-unknown-unknown/release/hydrodynamics.wasm
+          python3 scripts/check-exports.py "$wasm" horizon-mod.toml
+          size=$(wc -c < "$wasm")
+          echo "wasm size: $size bytes"
+          test "$size" -lt 2097152
+
+      - name: Package the .hmod
+        run: |
+          version=$(grep -E '^version +=' horizon-mod.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          python3 scripts/package.py \
+            --wasm target/wasm32-unknown-unknown/release/hydrodynamics.wasm \
+            --out "dist/hydrodynamics-${version}.hmod"
+          python3 scripts/release-notes.py \
+            --version "$version" \
+            --hmod "dist/hydrodynamics-${version}.hmod" \
+            --out dist/release-notes.md
+          ls -l dist/
+          # The archive must be installable: manifest at the root, wasm next to it.
+          python3 - <<'PY'
+          import zipfile, glob
+          path = glob.glob("dist/*.hmod")[0]
+          with zipfile.ZipFile(path) as zf:
+              names = set(zf.namelist())
+              assert "horizon-mod.toml" in names, names
+              assert "hydrodynamics.wasm" in names, names
+              manifest = zf.read("horizon-mod.toml").decode()
+              assert 'file             = "hydrodynamics.wasm"' in manifest, manifest
+              print("archive layout ok:", sorted(names))
+          PY
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          gh release create "$tag" \
+            "dist/hydrodynamics-${version}.hmod" \
+            --title "HydroDynamics & Thermodynamics Realism ${version}" \
+            --notes-file dist/release-notes.md \
+            --verify-tag || \
+          gh release upload "$tag" "dist/hydrodynamics-${version}.hmod" --clobber
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hmod
+          path: dist/*.hmod
+          if-no-files-found: warn

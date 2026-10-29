@@ -1,0 +1,329 @@
+# =============================================================================
+#  HydroDynamics & Thermodynamics Realism  —  Horizon engine mod manifest
+#  Target: wasm32-unknown-unknown (cdylib)   API: horizon-mod/1.4
+# =============================================================================
+#  The Rust module is the physics authority. This file registers the module with
+#  the engine, declares the blocks/fluids it owns, subscribes it to world events
+#  and mirrors every tunable that `horizon_configure` understands. Anything under
+#  [tunables] is pushed into the module at load time, one `key = value` pair at a
+#  time, in file order.
+
+[mod]
+id            = "hydrodynamics"
+name          = "HydroDynamics & Thermodynamics Realism"
+version       = "1.5.0"
+api           = "horizon-mod/1.4"
+authors       = ["Horizon Physics Team"]
+license       = "MIT OR Apache-2.0"
+description   = """
+Real cellular-automaton hydrodynamics, hydrostatic pressure, heat transfer, phase
+transitions and gas convection for the Horizon voxel engine. Sleeping chunks cost
+zero CPU; every kernel runs on integer arithmetic and never allocates.
+"""
+homepage      = "https://github.com/waterzyy/vibecode-test"
+requires      = { horizon = ">=1.4.0 <2.0.0", server_side = true, client_side = "optional" }
+
+# -----------------------------------------------------------------------------
+#  The compiled artifact and its entry points
+# -----------------------------------------------------------------------------
+[wasm]
+file             = "target/wasm32-unknown-unknown/release/hydrodynamics.wasm"
+memory           = "shared"        # the module uses the host's linear memory
+max_memory_mb    = 16
+stack_kb         = 1024
+threads          = false           # the tick is single-threaded by design
+simd             = false           # all maths is scalar integer
+imports          = []              # zero host imports: pure computation
+
+[wasm.exports]
+api_version      = "horizon_api_version"    # () -> u32
+alloc            = "horizon_alloc"          # (u32 len) -> *mut u8   argument buffers
+free             = "horizon_free"           # (ptr, u32 len) -> ()
+world_load       = "horizon_on_world_load"  # (u32 seed_hi, u32 seed_lo, i32 ambient_c) -> u32
+configure        = "horizon_configure"      # (ptr, u32, ptr, u32) -> u32
+tick             = "horizon_tick"           # () -> u32
+player_join      = "horizon_on_player_join" # (u32 player, u32 is_respawn) -> u32
+book_nbt_ptr     = "horizon_book_nbt_ptr"   # () -> *const u8
+book_nbt_len     = "horizon_book_nbt_len"   # () -> u32
+book_json_ptr    = "horizon_book_json_ptr"  # () -> *const u8
+book_json_len    = "horizon_book_json_len"  # () -> u32
+entity_forces    = "horizon_entity_forces"  # (i32, i32, i32, u32 density) -> u64
+entity_status    = "horizon_entity_status"  # (i32, i32, i32) -> u32
+run_command      = "horizon_run_command"    # (ptr, u32) -> u32  JSON reply
+reply_ptr        = "horizon_reply_ptr"      # () -> *const u8
+reply_len        = "horizon_reply_len"      # () -> u32
+get_block        = "horizon_get_block"      # (i32, i32, i32) -> u64
+set_block        = "horizon_set_block"      # (i32, i32, i32, u64) -> u32
+probe            = "horizon_probe"          # (i32, i32, i32) -> u32
+stats_ptr        = "horizon_stats_ptr"      # () -> *const u32
+event_pop        = "horizon_event_pop"      # () -> u64
+
+# -----------------------------------------------------------------------------
+#  Event subscriptions
+# -----------------------------------------------------------------------------
+#  `priority` orders handlers; `cancel` never removes a vanilla behaviour here —
+#  the mod replaces fluids entirely, so vanilla flow is disabled by `[world]`.
+[events]
+tick              = { handler = "horizon_tick",            stage = "world_tick",     priority = 0,  budget_ms = 8 }
+player_join       = { handler = "horizon_on_player_join",  stage = "post_join",      priority = 10, args = { is_respawn = 0 } }
+player_respawn    = { handler = "horizon_on_player_join",  stage = "post_respawn",   priority = 10, args = { is_respawn = 1 } }
+world_load        = { handler = "horizon_on_world_load",   stage = "pre_world",      priority = 0 }
+block_break       = { wake_radius = 2,  handler = "engine_hook_block_change" }
+block_place       = { wake_radius = 2,  handler = "engine_hook_block_change" }
+explosion         = { wake_radius = 4,  handler = "engine_hook_block_change" }
+chunk_load        = { handler = "engine_hook_chunk_load",  priority = 0 }
+chunk_unload      = { handler = "engine_hook_chunk_unload", priority = 0 }
+# Physics events are produced by the module itself and drained by the host each
+# tick via `horizon_event_pop`:
+emitted           = ["freeze", "melt", "boil", "condense", "quench", "shatter", "ignite"]
+
+[world]
+replace_vanilla_fluids = true      # vanilla water/lava flow is switched off
+fluid_tick_rate        = 20        # Hz, matches the engine tick
+max_chunk_radius       = 3         # 7x7 columns of simulated chunks
+geothermal_gradient    = true      # chunk ambient follows depth (see tunables)
+ocean_sources          = true      # unloaded chunk borders act as infinite reservoirs
+
+# -----------------------------------------------------------------------------
+#  Fluids owned by this mod
+# -----------------------------------------------------------------------------
+[[fluid]]
+id           = "hydrodynamics:water"
+species_id   = 1
+bucket       = "minecraft:water_bucket"
+density      = 1000
+mass_full    = 8
+boils_at     = 100
+freezes_at   = 0
+latent_vapor = 2257
+spawns       = { boil = "hydrodynamics:steam", freeze = "hydrodynamics:ice" }
+
+[[fluid]]
+id           = "hydrodynamics:salt_water"
+species_id   = 23
+bucket       = "hydrodynamics:salt_water_bucket"
+density      = 1025
+mass_full    = 8
+boils_at     = 102
+freezes_at   = -2
+latent_vapor = 2257
+spawns       = { boil = "hydrodynamics:steam", freeze = "hydrodynamics:ice" }
+
+[[fluid]]
+id           = "hydrodynamics:lava"
+species_id   = 4
+bucket       = "minecraft:lava_bucket"
+density      = 2600
+mass_full    = 8
+solidifies_at = 700
+light        = 15
+damage_on_contact = 4
+spawns       = { solidify = "hydrodynamics:basalt", quench = "hydrodynamics:obsidian" }
+
+[[fluid]]
+id           = "hydrodynamics:molten_metal"
+species_id   = 24
+bucket       = "hydrodynamics:molten_metal_bucket"
+density      = 6980
+mass_full    = 8
+solidifies_at = 1538
+light        = 12
+spawns       = { solidify = "minecraft:iron_block" }
+
+# -----------------------------------------------------------------------------
+#  Gases owned by this mod
+# -----------------------------------------------------------------------------
+[[gas]]
+id            = "hydrodynamics:steam"
+species_id    = 3
+rises         = true
+buoyancy      = 0.6
+condenses_at  = 95
+condense_into = "hydrodynamics:water"
+opacity       = 0.15
+particle      = "hydrodynamics:steam_puff"
+
+[[gas]]
+id            = "hydrodynamics:compressed_air"
+species_id    = 21
+rises         = false
+condenses_at  = -273
+opacity       = 0.0
+
+# -----------------------------------------------------------------------------
+#  Blocks (ice thicknesses, quench products, thermal sources)
+# -----------------------------------------------------------------------------
+[[block]]
+id         = "hydrodynamics:ice"
+species_id = 2
+states     = ["thin", "half", "solid"]     # driven by the fluid mass at freeze time
+melts_at   = 1
+melts_into = "hydrodynamics:water"
+
+[[block]]
+id          = "hydrodynamics:obsidian"
+species_id  = 7
+quench_of   = "hydrodynamics:lava"
+yield_pressure = 1600          # mirrors voxel::MATERIALS (250 Pa units, 40/block)
+
+[[block]]
+id          = "hydrodynamics:pumice"
+species_id  = 8
+quench_of   = "hydrodynamics:lava"
+density     = 600                          # floats: the buoyancy kernel honours it
+yield_pressure = 90
+
+[[block]]
+id          = "hydrodynamics:volcanic_glass"
+species_id  = 9
+quench_of   = "hydrodynamics:lava"
+yield_pressure = 70
+
+[[block]]
+id         = "hydrodynamics:magma"
+species_id = 5
+heat_output_c = 1200
+light      = 10
+
+[[block]]
+id         = "hydrodynamics:basalt"
+species_id = 6
+
+# -----------------------------------------------------------------------------
+#  The in-game book
+# -----------------------------------------------------------------------------
+[book]
+id              = "hydrodynamics:atlas_of_fluid_physics"
+title           = "Atlas of Fluid Physics"
+subtitle        = "Атлас гидролога"
+author          = "Horizon Physics Team"
+item            = "minecraft:written_book"
+generator       = "wasm"                   # content comes from horizon_book_nbt_ptr
+nbt_export      = "horizon_book_nbt_ptr + horizon_book_nbt_len"
+json_export     = "horizon_book_json_ptr + horizon_book_json_len"
+give_on         = ["first_join", "respawn"]
+open_automatically = false
+cooldown_seconds = 0
+color_scheme    = "hex"                    # JSON text components with #RRGGBB colours
+click_actions   = ["run_command:/hd book open {chapter}", "suggest_command:/hd help {topic}"]
+
+[[book.chapter]]
+id       = "vessels"
+title    = "Communicating Vessels & Dam Engineering"
+title_ru = "Сообщающиеся сосуды и строительство дамб"
+color    = "#4FC3F7"
+icon     = "minecraft:water_bucket"
+
+[[book.chapter]]
+id       = "thermal"
+title    = "Thermal Springs: Heating Pools, Melting Metals"
+title_ru = "Термальные источники: подогрев водоёмов и плавка"
+color    = "#FF8A65"
+icon     = "minecraft:magma_block"
+
+[[book.chapter]]
+id       = "steam"
+title    = "Steam Engines & Condensation in the Mines"
+title_ru = "Паровые двигатели и конденсация в шахтах"
+color    = "#B0BEC5"
+icon     = "minecraft:cauldron"
+
+[[book.chapter]]
+id       = "diving"
+title    = "Deep Diving: Compression Injuries"
+title_ru = "Опасность глубоких погружений: компрессионные травмы"
+color    = "#7E57C2"
+icon     = "minecraft:turtle_helmet"
+
+[[book.chapter]]
+id       = "engine"
+title    = "Inside the Simulation"
+title_ru = "Внутри симуляции: почему это быстро"
+color    = "#26A69A"
+icon     = "minecraft:redstone"
+
+[[book.chapter]]
+id       = "reference"
+title    = "Field Reference: Materials & Constants"
+title_ru = "Справочник: материалы и константы"
+color    = "#FFD54F"
+icon     = "minecraft:book"
+
+# -----------------------------------------------------------------------------
+#  Commands
+# -----------------------------------------------------------------------------
+[[command]]
+name        = "hd"
+description = "HydroDynamics administration and diagnostics"
+permission  = "hydrodynamics.admin"
+# `run` is the argument line forwarded verbatim to `horizon_run_command`; the
+# module answers with JSON (see `src/commands.rs`). `usage` is what the console
+# prints for `/hd help`, so it is kept identical to the module's own answer.
+children = [
+  { name = "stats",   run = "stats" },
+  { name = "book",    run = "book",    args = { chapter = "optional" }, usage = "book [chapter]" },
+  { name = "probe",   run = "probe",   args = { pos = "block_pos" }, usage = "probe <x> <y> <z>" },
+  { name = "set",     run = "set",     args = { pos = "block_pos", species = "string", mass = "0..8", temp = "i16" }, usage = "set <x> <y> <z> <species> [mass] [temp]" },
+  { name = "wake",    run = "wake",    args = { radius = "1..8" }, usage = "wake <radius> [x y z]" },
+  { name = "profile", run = "profile", args = { profile = "low|default|high" }, usage = "profile <low|default|high>" },
+  { name = "help",    run = "help" },
+]
+
+# -----------------------------------------------------------------------------
+#  Tunables — forwarded verbatim to `horizon_configure`
+# -----------------------------------------------------------------------------
+[tunables]
+# Every key below is routed through `horizon_configure` → `Tunables::apply_kv`.
+# An unknown key is rejected (the entry point answers 0), so keeping the names
+# in sync with `src/config.rs` matters more than the values do.
+"thermo.ambient_c"             = 20
+"world.rock_gradient_c"        = 6
+"world.sea_level_pressure"     = 405
+"world.pressure_per_block"     = 40
+"perf.tick_budget"             = 4096
+"perf.hydro_substeps"          = 2
+"hydro.flow_rate"              = 4
+"hydro.horizontal_rate_eighths" = 8
+"hydro.pressure_decay_256"     = 12
+"hydro.jet_velocity_per_head"  = 3
+"hydro.damage_threshold"       = 40    # 1 block of head == 40; glass yields at 80
+"hydro.damage_break"           = 12
+"thermo.conduction_q16"        = 21000
+"thermo.radiation_scale"       = 96
+"thermo.ambient_relax_q16"     = 900
+"thermo.boil_c"                = 100
+"thermo.condense_c"            = 95
+"thermo.cold_ceiling_c"        = 45
+"thermo.freeze_c"              = -1
+"thermo.melt_c"                = 1
+"thermo.bubble_c"              = 55
+"thermo.flash_pressure"        = 24000
+"thermo.flash_radius"          = 2
+"thermo.ignition_c"            = 320
+"thermo.basalt_c"              = 700
+"book.give_on_join"            = true
+"book.give_on_respawn"         = true
+
+# -----------------------------------------------------------------------------
+#  Presets (`/hd profile low|default|high`)
+# -----------------------------------------------------------------------------
+[profiles.low]
+"perf.tick_budget"      = 1536
+"perf.hydro_substeps"   = 1
+"thermo.flash_radius"   = 1
+
+[profiles.high]
+"perf.tick_budget"      = 12288
+"perf.hydro_substeps"   = 3
+"thermo.conduction_q16" = 28000
+"thermo.flash_radius"   = 3
+
+# -----------------------------------------------------------------------------
+#  Networking (server authoritative)
+# -----------------------------------------------------------------------------
+[network]
+mode              = "server_authoritative"
+state_sync        = "delta"        # only chunks flagged DIRTY are resent
+max_bytes_per_tick = 65536
+event_stream      = true           # horizon_event_pop -> particle packets
+client_prediction = false          # the atomaton is deterministic but budgeted
