@@ -937,7 +937,7 @@ fn explode(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> u16 {
 /// * a water cell sitting on a hot block (lava, magma, fire, or anything above
 ///   the bubble threshold) becomes a nucleation site;
 /// * the `BUBBLE`/`UPDRAFT` flags travel upward through the water column;
-/// * the entity layer reads `UPDRAFT` to push mobs, items and the player up, 
+/// * the entity layer reads `UPDRAFT` to push mobs, items and the player up,
 ///   the "boiling cauldron" effect described in the Atlas.
 pub fn nucleate(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> bool {
     let v = grid.voxel(slot, idx);

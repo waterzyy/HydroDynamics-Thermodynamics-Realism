@@ -866,7 +866,7 @@ impl Grid {
     /// Enforces the per-tick evaluation budget and rotates the work lists.
     ///
     /// `processed` is the number of leading `front` entries the kernels
-    /// evaluated; the remainder is carried into `back` so that no work is lost, 
+    /// evaluated; the remainder is carried into `back` so that no work is lost,
     /// it is only deferred by one tick ("temporal LOD"). The two buffers are then
     /// swapped, which is an `O(1)` pointer exchange because they are `Vec`s.
     pub fn rotate(&mut self, processed: usize) {
