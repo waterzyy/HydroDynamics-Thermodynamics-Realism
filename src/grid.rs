@@ -210,13 +210,23 @@ impl Chunk {
         }
     }
 
-    /// Computes the total fluid mass (8 = one full block) — the invariant the
-    /// conservation tests assert against.
+    /// Total **condensed-phase water mass** in the chunk (8 = one full block):
+    /// every fluid plus ice and snow, i.e. everything water can turn into and
+    /// back without becoming terrain.
+    ///
+    /// This is the counter the conservation tests assert against, and the
+    /// reason it stops at ice/snow is physical rather than convenient:
+    /// `freeze → melt` and `evaporate → condense` are closed cycles that must
+    /// never create or destroy a single eighth of a block. Solidifying lava into
+    /// obsidian or pumice is not one of those cycles — it is a phase change into
+    /// *terrain*, and terrain carries [`crate::units::MASS_FULL`] as a
+    /// "solid, not hollow" marker instead of a conserved amount (see
+    /// [`Voxel::effective_density`]).
     #[must_use]
     pub fn total_mass(&self) -> u32 {
         let mut m = 0u32;
         for v in self.voxels.iter() {
-            if v.is_fluid() {
+            if v.is_fluid() || matches!(v.species(), Species::Ice | Species::Snow) {
                 m += v.mass as u32;
             }
         }
