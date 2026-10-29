@@ -91,6 +91,15 @@ fn communicating_vessels_equalise_their_levels() {
 #[test]
 fn hydrostatic_pressure_matches_the_column_above() {
     let (mut sim, slot) = world();
+    // A sealed shaft. Without the walls the same water is free to spread over
+    // the open floor and there is no column left to measure — which is correct
+    // physics, just not the scenario this test is about.
+    for y in 1..12 {
+        for (x, z) in [(4usize, 5usize), (6, 5), (5, 4), (5, 6)] {
+            put(&mut sim, slot, x, y, z, Voxel::stone(20));
+        }
+    }
+    put(&mut sim, slot, 5, 1, 5, Voxel::stone(20));
     for y in 2..10 {
         put(&mut sim, slot, 5, y, 5, Voxel::water(20));
     }
@@ -218,6 +227,17 @@ fn a_thermal_spring_boils_its_pool_and_emits_steam() {
 fn cold_water_freezes_into_ice_of_proportional_thickness() {
     let (mut sim, slot) = world();
     sim.grid.chunks[slot].ambient = -12;
+    // Rock-lined pits: an unsupported sample would fall (and a supported one
+    // would still spread) before it had a chance to crystallise, which is
+    // correct physics but not what this test measures.
+    for (x, z) in [(3usize, 3usize), (5, 5)] {
+        put(&mut sim, slot, x, 2, z, Voxel::stone(-12));
+        for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let nx = (x as i32 + dx) as usize;
+            let nz = (z as i32 + dz) as usize;
+            put(&mut sim, slot, nx, 3, nz, Voxel::stone(-12));
+        }
+    }
     let mut thin = Voxel::water(-6);
     thin.mass = 3;
     put(&mut sim, slot, 3, 3, 3, thin);
@@ -315,7 +335,13 @@ fn deep_water_causes_compression_injuries() {
     let dmg = entities::compression_damage_per_second(deep, &t);
     assert!(dmg > 0, "80 blocks of water must hurt");
     // Exposure is per second; a diver at 80 blocks takes damage every second.
-    assert!(dmg < 40);
+    // The curve saturates at 40 half-hearts/s — the model refuses to invent an
+    // instant kill, the depth alone does the work long before the cap.
+    assert!(dmg <= 40);
+    assert!(
+        entities::compression_damage_per_second(thermo::pressure_at_depth(400, &t), &t) <= 40,
+        "damage must saturate instead of exploding"
+    );
 }
 
 #[test]
@@ -558,4 +584,65 @@ fn flow_hints_encode_the_direction() {
     let dir = hydrodynamics::voxel::aux::flow_dir(v.aux);
     assert!(dir < 6, "a falling cell must record its direction, got {dir}");
     assert!(v.has(flags::MOVED));
+}
+
+// ---------------------------------------------------------------------------
+// TEMPORARY diagnostic
+// ---------------------------------------------------------------------------
+
+fn tally(sim: &Sim, slot: usize) -> [u32; 25] {
+    let mut out = [0u32; 25];
+    for v in sim.grid.voxels(slot).iter() {
+        out[v.species as usize] += v.mass as u32;
+    }
+    out
+}
+
+#[test]
+fn tmp_mass_trace() {
+    let (mut sim, slot) = world();
+    stone_floor(&mut sim, slot, 1);
+    for y in 2..12 {
+        for z in 0..16 {
+            if (y + z) % 3 == 0 {
+                put(&mut sim, slot, 6, y, z, Voxel::stone(20));
+            }
+        }
+    }
+    put(&mut sim, slot, 3, 2, 3, Voxel::new(Species::Lava, 1_150));
+    for x in 2..12 {
+        for z in 2..12 {
+            if (x * z) % 5 != 0 {
+                put(&mut sim, slot, x, 3, z, Voxel::water(30));
+            }
+        }
+    }
+    sim.grid.wake_all(slot);
+
+    let mut prev = tally(&sim, slot);
+    let mut prev_fluid = sim.grid.total_mass();
+    for tick in 0..500 {
+        sim.tick();
+        let now = tally(&sim, slot);
+        let fluid = sim.grid.total_mass();
+        if now != prev {
+            let mut msg = format!(
+                "tick {tick}: fluid {prev_fluid} -> {fluid}; species deltas:"
+            );
+            for i in 0..25 {
+                if now[i] != prev[i] {
+                    msg.push_str(&format!(
+                        " {:?} {}->{}",
+                        Species::from_u8(i as u8),
+                        prev[i],
+                        now[i]
+                    ));
+                }
+            }
+            panic!("{msg}");
+        }
+        prev = now;
+        prev_fluid = fluid;
+    }
+    panic!("no species change in 500 ticks, fluid mass {} end", prev_fluid);
 }
