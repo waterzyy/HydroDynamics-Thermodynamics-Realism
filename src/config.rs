@@ -240,7 +240,7 @@ impl Tunables {
                     "world.pressure_per_block" => {
                         self.pressure_per_block = i.clamp(0, 65_535) as u16
                     }
-                    "perf.tick_budget" => self.tick_budget = i.clamp(64, 65_535) as u32,
+                    "perf.tick_budget" => self.tick_budget = i.clamp(1, 65_535) as u32,
                     "perf.hydro_substeps" => self.hydro_substeps = i.clamp(1, 4) as u8,
                     "hydro.flow_rate" => self.flow_rate = i.clamp(1, 8) as Mass,
                     "hydro.horizontal_rate_eighths" => {
@@ -277,7 +277,7 @@ impl Tunables {
     /// Clamps every field into a physically sane range (called after config
     /// loading so a hostile datapack cannot produce e.g. `conduction == 100 %`).
     pub fn sanitize(&mut self) {
-        self.tick_budget = self.tick_budget.clamp(64, 65_535);
+        self.tick_budget = self.tick_budget.clamp(1, 65_535);
         self.hydro_substeps = self.hydro_substeps.clamp(1, 4);
         self.conduction_q16 = self.conduction_q16.min(32_000); // ≤ 0.5 → stable
         self.ambient_relax_q16 = self.ambient_relax_q16.min(4_000);

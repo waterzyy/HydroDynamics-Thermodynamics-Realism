@@ -8,12 +8,13 @@
 //!
 //! 1. **Gravity** — if the cell below can accept mass, everything that fits
 //!    falls. This is what empties a breached dam in a few ticks.
-//! 2. **Levelling by energy descent** — otherwise mass moves horizontally to the
-//!    neighbour that minimises the potential energy of the pair (see
-//!    [`try_level`]). Because only strictly energy-reducing moves are allowed,
-//!    the total energy is a monotone decreasing quantity: the automaton cannot
-//!    cycle, so a levelled body of water is a genuine fixed point and its chunk
-//!    can go to sleep.
+//! 2. **Levelling by hydraulic-head descent** — otherwise mass moves
+//!    horizontally towards the neighbour with the lower free surface, i.e. the
+//!    neighbour whose own mass plus the column above it is smaller (see
+//!    [`try_level`] and [`hydraulic_head`]). Only head-reducing transfers are
+//!    allowed and each one is capped at half the head difference, so the pair
+//!    converges monotonically, never overshoots and never cycles: a levelled
+//!    body of water is a genuine fixed point and its chunk can go to sleep.
 //! 3. **Density inversion** — a gas under a liquid (or a liquid over a gas) swaps
 //!    with it. Steam therefore bubbles up through water while the water sinks,
 //!    with exact mass conservation and no special-casing.
@@ -227,7 +228,7 @@ pub fn tick_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Flow
         return res;
     }
 
-    // ---- 3. levelling (energy descent) ------------------------------------
+    // ---- 3. levelling (hydraulic-head descent) ----------------------------
     if let Some(res) = try_level(grid, slot, idx, t) {
         return res;
     }
@@ -241,7 +242,7 @@ pub fn tick_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Flow
 }
 
 /// Gravity: pour the cell into whatever is below it.
-fn try_fall(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
+fn try_fall(grid: &mut Grid, slot: usize, idx: usize, _t: &Tunables) -> Option<FlowResult> {
     let me = grid.voxel(slot, idx);
     let n = grid.neighbor(slot, idx, DIR_NEG_Y)?;
     let below = grid.chunks[n.chunk].get(n.index);
@@ -270,7 +271,7 @@ fn try_fall(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<Fl
 }
 
 /// Buoyancy: a gas rises into whatever is above it, swapping through liquids.
-fn try_rise(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
+fn try_rise(grid: &mut Grid, slot: usize, idx: usize, _t: &Tunables) -> Option<FlowResult> {
     let me = grid.voxel(slot, idx);
     let n = grid.neighbor(slot, idx, DIR_POS_Y)?;
     let above = grid.chunks[n.chunk].get(n.index);
@@ -296,12 +297,17 @@ fn try_rise(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<Fl
 
 /// A gas expands sideways into any emptier cell (gases are compressible, so the
 /// energy argument that forbids a horizontal *liquid* swap does not apply).
-fn try_spread(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
+fn try_spread(grid: &mut Grid, slot: usize, idx: usize, _t: &Tunables) -> Option<FlowResult> {
     let me = grid.voxel(slot, idx);
     let mut best: Option<(Dir, Neighbor, u8)> = None;
     let mut best_mass = me.mass;
     for d in HORIZONTAL {
-        let n = grid.neighbor(slot, idx, d)?;
+        let n = match grid.neighbor(slot, idx, d) {
+            Some(n) => n,
+            // An open border is an infinite reservoir, not an exit from the
+            // scan: keep probing the other three sides.
+            None => continue,
+        };
         let nv = grid.chunks[n.chunk].get(n.index);
         if nv.is_liquid() {
             continue; // gases only rise through liquids, never sideways
@@ -329,27 +335,37 @@ fn try_spread(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<
     })
 }
 
-/// Levelling by **energy descent**.
+/// Levelling by **hydraulic-head descent**.
 ///
-/// The potential energy of a cell holding `m` units at elevation `y` is
-/// `16·y·m + m²` (water fills a cell from the bottom, so the column inside the
-/// cell contributes `m²/16`). Moving `Δm` from `a` to `b` changes the total by
+/// Water moves horizontally from the cell with the higher free surface to the
+/// cell with the lower one. The surface of a cell is its own mass plus the
+/// column standing above it (see [`hydraulic_head`]), so this is the discrete
+/// form of the communicating-vessels law: a body of water flows until both
+/// surfaces are level, then stops. It is also what gives a thin trickle its
+/// push — a one-unit cell in the middle of a column has a tall head behind it,
+/// so it keeps moving, while a one-unit puddle sitting on bare rock has none.
 ///
-/// ```text
-/// ΔE = 2Δm · ( 8(y_b − y_a) + m_b − m_a + Δm )
-/// ```
+/// # Termination
 ///
-/// so the transfer that minimises the energy is `Δm* = (8·(y_a − y_b) + m_a − m_b)/2`.
-/// Only strictly negative `ΔE` moves are allowed, which makes the total energy a
-/// **monotone decreasing** quantity: the automaton cannot cycle, so a settled
-/// puddle is a true fixed point and its chunk can sleep. It also gives the
-/// correct hydrostatics for free — a downward move is always downhill in energy,
-/// a horizontal one only levels, and an upward one is impossible without the
-/// pressure field.
+/// Let `q = H_a − H_b` be the head difference of a pair. The kernel moves
+/// `Δ = min(q/2, …)` units, so `H_a` can never fall below `H_b`: the pair
+/// converges monotonically and cannot overshoot into an oscillation. Moves are
+/// only considered for `q ≥ 2` (a quarter block of head), and that hysteresis
+/// band is what makes a levelled body a genuine fixed point — the reason its
+/// chunk can go to sleep with zero CPU cost.
+///
+/// The single exception is a *supported* cell (it holds a full block, or there
+/// is water standing on top of it) pouring one unit into a **completely empty**
+/// neighbour. That move is energetically neutral, so it cannot raise the
+/// potential, and the receiving cell is a one-unit film with nothing above it
+/// that can never push the unit back — a ratchet, not a cycle. It is what lets
+/// a culvert charge from a reservoir instead of stalling on the first
+/// single-unit frontier it creates.
 fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<FlowResult> {
     let me = grid.voxel(slot, idx);
-    let y = elevation(grid, slot, idx);
     let rate_cap = ((t.flow_rate as u16 * t.horizontal_rate_eighths as u16) / 8).max(1) as u8;
+    let my_head = hydraulic_head(me, t);
+    let supported = column_above(me, t) > 0 || me.mass >= 2;
     let mut best: Option<(Dir, Neighbor, u8)> = None;
 
     for d in HORIZONTAL {
@@ -368,18 +384,18 @@ fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<F
         if !nv.is_empty_like() && !same_liquid(nv, me) {
             continue; // different substances only exchange vertically
         }
-        // A single unit never drifts sideways into empty space: the move would be
-        // free to reverse and the two cells would trade it forever.
-        if nv.is_empty_like() && me.mass < 2 {
+        let q = my_head - hydraulic_head(nv, t);
+        let want = if q >= 2 {
+            q / 2
+        } else if q == 1 && nv.mass == 0 && supported {
+            1
+        } else {
             continue;
-        }
-        // Horizontal neighbours sit at the same elevation, so `dy == 0`.
-        let dy = y - elevation(grid, n.chunk, n.index);
-        let want = (8 * dy + me.mass as i32 - nv.mass as i32) / 2;
-        if want < 1 {
-            continue;
-        }
-        let amount = (want as u8).min(room).min(me.mass).min(rate_cap);
+        };
+        let amount = want
+            .min(room as i32)
+            .min(me.mass as i32)
+            .min(rate_cap as i32) as u8;
         if amount == 0 {
             continue;
         }
@@ -545,6 +561,46 @@ pub fn update_pressure(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -
 #[must_use]
 pub fn excess_pressure(v: Voxel, t: &Tunables) -> u16 {
     v.pressure.saturating_sub(t.sea_level_pressure)
+}
+
+/// Largest column (in 1/8-block units) the levelling kernel trusts from the
+/// pressure field: 512 units == 64 full blocks of water. Deeper than any dam a
+/// player will build, and small enough to keep every intermediate `i32` tiny.
+pub const MAX_HEAD_UNITS: i32 = 512;
+
+/// Hydraulic head of a liquid cell: the mass standing **at and above** it, in
+/// `1/8`-block units.
+///
+/// The pressure field already stores exactly this quantity — [`update_pressure`]
+/// maintains `p = p[above] + ρg·mass/8`, i.e. the weight of the whole column
+/// down to the *bottom* of the cell — so the head costs one multiply and one
+/// divide instead of a column walk in the hot loop. Gases and empty cells carry
+/// no column and report 0.
+#[inline]
+#[must_use]
+pub fn hydraulic_head(v: Voxel, t: &Tunables) -> i32 {
+    if !v.is_liquid() {
+        return 0;
+    }
+    let mass = v.mass as i32;
+    let per_block = t.pressure_per_block.max(1) as i32;
+    let excess = (v.pressure as i32 - t.sea_level_pressure as i32).max(0);
+    let column = ((excess * MASS_FULL as i32) / per_block).min(MAX_HEAD_UNITS);
+    // A freshly created cell still carries the sea-level default until
+    // `update_pressure` runs; never report less than the cell's own mass.
+    if column > mass {
+        column
+    } else {
+        mass
+    }
+}
+
+/// Mass standing *above* this cell — the part of the head that can push a
+/// horizontal transfer. Zero for a surface cell sitting on bare rock.
+#[inline]
+#[must_use]
+pub fn column_above(v: Voxel, t: &Tunables) -> i32 {
+    (hydraulic_head(v, t) - v.mass as i32).max(0)
 }
 
 /// Column height in mass units: how much fluid stands above this cell.
@@ -827,7 +883,7 @@ mod tests {
             }
         }
         let before = g.total_mass();
-        let mut run = |g: &mut Grid| -> usize {
+        let run = |g: &mut Grid| -> usize {
             let mut changed = 0;
             for y in 2..10 {
                 for z in 0..10 {

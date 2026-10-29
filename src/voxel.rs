@@ -954,6 +954,13 @@ impl Voxel {
 
     /// Creates a voxel with the given species, temperature and a full mass for
     /// solids / mass 8 for liquids.
+    ///
+    /// The returned cell is **not** on a work list: the `ACTIVE` flag is owned by
+    /// [`crate::grid::Grid`], which sets it exactly when it pushes the cell onto
+    /// its double-buffered queue (that is the invariant behind the duplicate-free
+    /// work list). A constructor therefore starts `SLEEPING`, and writing the
+    /// cell through [`crate::grid::Grid::set_world`] / [`crate::grid::Grid::put`]
+    /// schedules it.
     #[inline]
     #[must_use]
     pub const fn new(species: Species, temp: Temp) -> Voxel {
@@ -964,7 +971,7 @@ impl Voxel {
             mass: MASS_FULL,
             temp,
             pressure: 408,
-            flags: flags::ACTIVE,
+            flags: flags::SLEEPING,
             aux: aux::FLOW_NONE,
         }
     }
@@ -1155,7 +1162,10 @@ impl Voxel {
             mass,
             temp,
             pressure,
-            flags: flags::ACTIVE,
+            // Flags are recomputed on load, exactly like the doc above promises:
+            // a deserialised cell is not on a work list until the grid schedules
+            // it (`Grid::load_chunk` calls `Grid::wake_all`).
+            flags: flags::SLEEPING,
             aux: aux::FLOW_NONE,
         }
     }

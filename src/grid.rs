@@ -188,15 +188,19 @@ impl Chunk {
 
     /// Raises the `ACTIVE` flag on every voxel of the chunk and clears `ASLEEP`.
     ///
-    /// This only touches *flags*; to actually schedule the work use
-    /// [`Grid::wake_all`], which also pushes the voxels onto the work list.
+    /// This only touches *chunk* state; the per-voxel `ACTIVE` flag is owned by
+    /// the scheduler, because "ACTIVE == on a work list" is the invariant that
+    /// keeps [`crate::grid::Grid::wake`] duplicate-free. A wake that also set the
+    /// voxel flags without queueing anything would silently strand the whole
+    /// chunk (marked awake, never evaluated).
+    ///
+    /// To actually schedule the work use [`Grid::wake_all`], which pushes every
+    /// voxel onto the work list.
     pub fn wake_all(&mut self) {
         self.wake();
         for v in self.voxels.iter_mut() {
-            v.flags |= flags::ACTIVE;
             v.flags &= !flags::SLEEPING;
         }
-        self.active_count = CHUNK_VOLUME as u16;
     }
 
     /// Clears the per-tick `MOVED`/`TRANSITIONED` markers before a kernel run.
@@ -511,10 +515,13 @@ impl Grid {
 
     /// Writes a voxel in world space, creating the chunk if required and waking
     /// the six neighbours so the change propagates.
+    ///
+    /// The write goes through [`Grid::put`], so the caller cannot fake the
+    /// scheduler state: the cell is queued by `wake`, never by its own flags.
     pub fn set_world(&mut self, x: i32, y: i32, z: i32, v: Voxel) {
         let (coords, idx) = Grid::world_to_local(x, y, z);
         let slot = self.ensure_chunk(coords);
-        self.chunks[slot].set(idx, v);
+        self.put(slot, idx, v);
         self.wake(slot, idx);
         // Boundary writes must wake the neighbour chunk as well.
         for d in dirs::DIRS {
@@ -609,12 +616,24 @@ impl Grid {
     }
 
     /// Writes a voxel by `(slot, index)`. Returns `true` when something changed.
+    ///
+    /// # Scheduling invariant
+    ///
+    /// `ACTIVE` means *"this cell is on a work list"*. A write may never
+    /// manufacture that state — a kernel that builds a fresh cell (steam from a
+    /// boil, the destination of a pour, …) obviously writes `ACTIVE` in its own
+    /// flags, but the cell is not on a list yet; keeping the bit would make the
+    /// following `wake_next` a no-op and strand the cell forever. So the bit is
+    /// preserved only when the cell really was queued before the write.
     #[inline]
-    pub fn put(&mut self, slot: usize, idx: usize, v: Voxel) -> bool {
+    pub fn put(&mut self, slot: usize, idx: usize, mut v: Voxel) -> bool {
         if slot >= self.chunks.len() || idx >= CHUNK_VOLUME {
             return false;
         }
         let old = self.chunks[slot].voxels[idx];
+        if old.flags & flags::ACTIVE == 0 {
+            v.flags &= !flags::ACTIVE;
+        }
         if old == v {
             return false;
         }
@@ -768,36 +787,17 @@ impl Grid {
         let mask = BORDER_MASKS[idx];
         if mask != 0 {
             let mut c = self.chunks[slot].coords;
-            if mask & (1 << DIR_NEG_X) != 0 {
-                c[0] -= 1;
+            for d in dirs::DIRS {
+                if mask & (1 << d) == 0 {
+                    continue;
+                }
+                let axis = dirs::axis(d) as usize;
+                let saved = c[axis];
+                c[axis] += dirs::sign(d);
                 self.wake_chunk_border(c);
-                c[0] += 1;
+                c[axis] = saved;
             }
-            if mask & (1 << DIR_POS_X) != 0 {
-                c[0] += 1;
-                self.wake_chunk_border(c);
-                c[0] -= 1;
-            }
-            if mask & (1 << DIR_NEG_Y) != 0 {
-                c[1] -= 1;
-                self.wake_chunk_border(c);
-                c[1] += 1;
-            }
-            if mask & (1 << DIR_POS_Y) != 0 {
-                c[1] += 1;
-                self.wake_chunk_border(c);
-                c[1] -= 1;
-            }
-            if mask & (1 << DIR_NEG_Z) != 0 {
-                c[2] -= 1;
-                self.wake_chunk_border(c);
-                c[2] += 1;
-            }
-            if mask & (1 << DIR_POS_Z) != 0 {
-                c[2] += 1;
-                self.wake_chunk_border(c);
-                c[2] -= 1;
-            }
+            let _ = c;
         }
     }
 
@@ -1097,12 +1097,22 @@ mod tests {
     fn wake_flags_neighbours() {
         let mut g = tiny_grid();
         g.set_world(1, 1, 1, Voxel::water(20));
+        // Simulate a completed tick: the work list is drained, which clears the
+        // per-voxel queue flag as well (that is what `settle` does in the tick
+        // loop). Clearing only the list would leave a stale `ACTIVE` bit behind
+        // and `wake` would — correctly — refuse to push the cell twice.
         g.front.clear();
         let slot = g.find([0, 0, 0]).unwrap();
+        for v in g.chunks[slot].voxels.iter_mut() {
+            v.flags &= !flags::ACTIVE;
+        }
+        g.chunks[slot].active_count = 0;
+
         let idx = dirs::index(1, 1, 1);
         g.wake_with_neighbors(slot, idx);
         // centre + 6 neighbours
-        assert!(g.front.len() >= 7, "expected 7 entries, got {}", g.front.len());
+        assert_eq!(g.front.len(), 7, "expected 7 entries, got {}", g.front.len());
+        assert_eq!(g.chunks[slot].active_count, 7, "accounting must match the list");
         let c = &g.chunks[slot];
         for d in dirs::DIRS {
             let (x, y, z) = dirs::unindex(idx);

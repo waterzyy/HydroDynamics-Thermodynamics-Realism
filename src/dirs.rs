@@ -291,8 +291,11 @@ mod tests {
             let (x, y, z) = unindex(i);
             if x + 1 < CHUNK_SIZE {
                 let j = index(x + 1, y, z);
-                let a = BORDER_MASKS[i] & !(1 << DIR_POS_X);
-                let b = BORDER_MASKS[j] & !(1 << DIR_NEG_X);
+                // Both X bits have to be masked out: they are exactly the ones
+                // that legitimately differ between two voxels one apart in X
+                // (voxel i touches -X, voxel j may touch +X).
+                let a = BORDER_MASKS[i] & !(1 << DIR_POS_X) & !(1 << DIR_NEG_X);
+                let b = BORDER_MASKS[j] & !(1 << DIR_NEG_X) & !(1 << DIR_POS_X);
                 assert_eq!(a, b, "border mask mismatch between {i} and {j}");
             }
         }

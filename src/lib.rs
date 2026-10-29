@@ -513,8 +513,10 @@ pub extern "C" fn horizon_get_block(x: i32, y: i32, z: i32) -> u64 {
 #[no_mangle]
 pub extern "C" fn horizon_set_block(x: i32, y: i32, z: i32, word: u64) -> u32 {
     with_sim(|sim| {
-        let mut v = voxel::Voxel::from_u64(word);
-        v.flags |= voxel::flags::ACTIVE;
+        // `set_world` owns the scheduling flags: it queues the cell itself, so
+        // poking `ACTIVE` into the word here would make the voxel look queued
+        // while it is not, and it would never be evaluated.
+        let v = voxel::Voxel::from_u64(word);
         sim.grid.set_world(x, y, z, v);
         u32::from(sim.grid.get_world(x, y, z).is_some())
     })
@@ -727,6 +729,12 @@ mod tests {
     fn boiling_water_creates_steam_and_events() {
         let mut s = sim();
         let sl = slot(&s);
+        // A stone cauldron: the water must sit still, otherwise it simply falls
+        // and spreads and there is nothing left above the source cell to boil.
+        s.grid.put(sl, dirs::index(4, 3, 4), Voxel::stone(20));
+        for (x, z) in [(3, 4), (5, 4), (4, 3), (4, 5)] {
+            s.grid.put(sl, dirs::index(x, 4, z), Voxel::stone(20));
+        }
         let idx = dirs::index(4, 4, 4);
         let mut w = Voxel::water(130);
         w.mass = 4;
@@ -755,6 +763,12 @@ mod tests {
     fn lava_under_water_quenches_and_reports_an_event() {
         let mut s = sim();
         let sl = slot(&s);
+        // The lava pool rests on rock; unsupported lava would fall away from the
+        // water before the contact reaction is resolved (which is correct — it
+        // is just not the scenario this test is about).
+        for (x, z) in [(4, 5), (5, 5), (6, 5), (5, 4), (5, 6)] {
+            s.grid.put(sl, dirs::index(x, 4, z), Voxel::stone(20));
+        }
         s.grid.put(sl, dirs::index(5, 5, 5), Voxel::new(Species::Lava, 1_150));
         let mut w = Voxel::water(20);
         w.mass = 8;

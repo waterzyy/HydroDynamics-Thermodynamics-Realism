@@ -25,12 +25,19 @@ pub const DENSITY_SWIMMER: u32 = 1_050;
 /// vertical component of a jet:
 ///
 /// ```text
-/// a = g·(ρ_fluid − ρ_entity)/ρ_entity  +  updraft  +  jet_y
+/// a = max( g·(ρ_fluid − ρ_entity)/ρ_entity ,  updraft )  +  jet_y
 /// ```
 ///
 /// * a plank (700 kg/m³) in water: `+0.42 g` → floats to the surface;
 /// * an armoured player (2 100 kg/m³): `−0.52 g` → sinks and must swim up;
 /// * a lava pool (2 600 kg/m³) floats even a stone golem — lava is dense.
+///
+/// The updraft of a bubble column is **entrainment, not buoyancy**: a two-phase
+/// column drags whatever is inside it along with the vapour, so the terminal
+/// velocity of an object in it is set by the *flow*, not by the object's density.
+/// That is why it is applied as a floor (`max`) rather than an addition — an
+/// iron-armoured diver in a boiling cauldron is carried up, exactly as the Atlas
+/// describes, while a swimmer in still water still sinks.
 #[must_use]
 pub fn vertical_acceleration(
     grid: &Grid,
@@ -55,7 +62,8 @@ pub fn vertical_acceleration(
         a = 0;
     }
     if cell.flags & flags::UPDRAFT != 0 {
-        a += t.bubble_lift as i32;
+        // Entrainment: the column's own velocity dominates the density term.
+        a = a.max(t.bubble_lift as i32);
     }
     let (coords, idx) = Grid::world_to_local(x, y, z);
     if let Some(slot) = grid.find(coords) {

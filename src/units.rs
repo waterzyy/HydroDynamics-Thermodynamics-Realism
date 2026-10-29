@@ -395,8 +395,11 @@ mod tests {
         assert_eq!(isqrt_u64(0), 0);
         assert_eq!(isqrt_u64(1), 1);
         assert_eq!(isqrt_u64(u64::MAX), 4_294_967_295);
-        // (2^32-1)^2 must not overflow internally.
-        assert_eq!(isqrt_u64(18_446_744_065_273_509_376), 4_294_967_294);
+        // (2^32 - 2)^2 must not overflow internally (it is 2^64 - 2^34 + 4).
+        let sq = 4_294_967_294u64 * 4_294_967_294u64;
+        assert_eq!(isqrt_u64(sq), 4_294_967_294);
+        // ... and the largest input that still rounds down to it.
+        assert_eq!(isqrt_u64(4_294_967_295u64 * 4_294_967_295u64 - 1), 4_294_967_294);
     }
 
     #[test]
@@ -442,7 +445,9 @@ mod tests {
         assert_eq!(decay(1000, 0), 0);
         assert_eq!(decay(1000, 1), 500);
         assert_eq!(decay(1000, 32), 1000);
-        assert!(decay(1000, 4) > decay(1000, 6));
+        // A larger shift decays *less*: `decay` returns the surviving value.
+        assert!(decay(1000, 4) < decay(1000, 6));
+        assert_eq!(decay(1000, 6), 985);
     }
 
     #[test]
