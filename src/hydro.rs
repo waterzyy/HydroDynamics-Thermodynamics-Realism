@@ -1018,21 +1018,28 @@ mod tests {
                 g.put(s, dirs::index(x, 1, z), Voxel::stone(20));
             }
         }
-        // One eighth of a block sitting in front of a full column: on its own it
-        // is a settled film, but the column behind it keeps pushing, so the
+        // A one-cell-wide channel, closed at the -X end: the water has exactly
+        // one way out, so the assertion measures the rule and not the direction
+        // preference of the kernel.
+        for x in 0..16 {
+            g.put(s, dirs::index(x, 2, 2), Voxel::stone(20));
+            g.put(s, dirs::index(x, 2, 4), Voxel::stone(20));
+        }
+        g.put(s, dirs::index(2, 2, 3), Voxel::stone(20));
+        // One eighth of a block in front of a full block: on its own a lone unit
+        // is a settled film, but the full block behind it keeps pushing, so the
         // trickle has to advance instead of stalling at the first frontier.
         g.put(s, dirs::index(3, 2, 3), Voxel::water(20));
         let mut trickle = Voxel::water(20);
         trickle.mass = 1;
         g.put(s, dirs::index(4, 2, 3), trickle);
-        for _ in 0..40 {
-            for z in 0..8 {
-                for x in 0..8 {
-                    tick_cell(&mut g, s, dirs::index(x, 2, z), &t);
-                }
+        for _ in 0..10 {
+            for x in 0..12 {
+                tick_cell(&mut g, s, dirs::index(x, 2, 3), &t);
             }
         }
         assert!(column(&g, 6, 3) > 0, "the trickle must reach x=6");
+        assert_eq!(g.total_mass(), 9, "one unit may not vanish on the way");
     }
 
     #[test]
