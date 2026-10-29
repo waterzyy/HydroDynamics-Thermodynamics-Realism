@@ -30,6 +30,8 @@ jobs:
             echo "### wasm build"
             cargo build --release --target wasm32-unknown-unknown --message-format=short 2>&1 | tail -30
             ls -l target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || true
+            echo "### exports vs manifest"
+            python3 scripts/check-exports.py target/wasm32-unknown-unknown/release/hydrodynamics.wasm horizon-mod.toml 2>&1 | head -40
           } > /tmp/report.txt
           cp /tmp/report.txt /tmp/report_tail.txt
           wc -c /tmp/report.txt

@@ -34,6 +34,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Build the cdylib
         run: cargo build --release --target wasm32-unknown-unknown
+      - name: Check the artifact exports what the manifest promises
+        run: python3 scripts/check-exports.py target/wasm32-unknown-unknown/release/hydrodynamics.wasm horizon-mod.toml
       - name: Check the artifact is self-contained
         run: |
           size=$(wc -c < target/wasm32-unknown-unknown/release/hydrodynamics.wasm)
