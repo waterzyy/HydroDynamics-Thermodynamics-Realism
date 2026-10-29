@@ -34,7 +34,7 @@ a settled world costs **zero CPU**.
 * **Атлас гидролога.** `src/book.rs` генерирует иллюстрированную книгу
   «Atlas of Fluid Physics» (NBT для `written_book` + JSON-двойник) и выдаёт её
   при первом входе и респавне.
-* **Проверка.** `cargo test` — 149 тестов (юнит + интеграционные сценарии),
+* **Проверка.** `cargo test` — 160 тестов (юнит + интеграционные сценарии),
   `wasm` собирается в ~95 КБ без единой внешней зависимости.
 
 ---
@@ -154,7 +154,8 @@ horizon_tick() ─▶ Sim::tick()
 | `grid.rs` | chunk pool, active list, sleep/wake, save/load, diagnostics |
 | `hydro.rs` | communicating vessels, head, jets, buoyancy, fracture |
 | `thermo.rs` | conduction, radiation, phase machine, quench, convection |
-| `entities.rs` | Archimedes, updrafts, drag, compression injuries |
+| `entities.rs` | Archimedes, updrafts, drag, compression injuries, the packed entity word |
+| `commands.rs` | the `/hd` console surface declared in the manifest (JSON replies) |
 | `book.rs` | the generated *Atlas of Fluid Physics* (JSON + NBT) |
 | `lib.rs` | the WASM ABI, the sim facade, the event ring |
 
@@ -185,11 +186,14 @@ Illustration briefs live in [`docs/book-assets.md`](docs/book-assets.md).
 ## WASM ABI
 
 All entry points are `extern "C"` with integer arguments only; the module has
-**zero host imports** and needs no allocator beyond its own chunk pool.
+**zero host imports** and never allocates inside the tick. Strings travel the
+other way — the host asks for a buffer with `horizon_alloc`, fills it, and calls
+`horizon_configure` / `horizon_run_command` with that pointer.
 
 | export | signature | purpose |
 |---|---|---|
 | `horizon_api_version` | `() -> u32` | ABI handshake (`0x0001_0004`) |
+| `horizon_alloc` / `horizon_free` | `(len) -> *mut u8` / `(ptr, len)` | argument buffers owned by the module |
 | `horizon_on_world_load` | `(seed_hi, seed_lo, ambient_c) -> u32` | build the grid + the Atlas, return its NBT length |
 | `horizon_configure` | `(k_ptr, k_len, v_ptr, v_len) -> u32` | one `key = value` from the manifest (1 = accepted) |
 | `horizon_tick` | `() -> u32` | one world tick; returns voxels evaluated |
@@ -199,18 +203,55 @@ All entry points are `extern "C"` with integer arguments only; the module has
 | `horizon_get_block` | `(x, y, z) -> u64` | packed voxel (`Voxel::to_u64`) |
 | `horizon_set_block` | `(x, y, z, word) -> u32` | write + wake the neighbourhood |
 | `horizon_probe` | `(x, y, z) -> u32` | species/mass/temp/pressure for the HUD |
+| `horizon_entity_forces` | `(x, y, z, density) -> u64` | buoyancy + updraft + jet push + drag, packed |
+| `horizon_entity_status` | `(x, y, z) -> u32` | submersion depth + barotrauma (`depth | damage << 16`) |
+| `horizon_run_command` | `(ptr, len) -> u32` | one `/hd` line → JSON reply |
+| `horizon_reply_ptr` / `_len` | `() -> *const u8` / `u32` | the reply of the last command |
 | `horizon_stats_ptr` | `() -> *const u32` | 8 diagnostics words: active, processed, requeued, chunks, asleep, mass, tick, events |
 | `horizon_event_pop` | `() -> u64` | next physics event (`kind | slot | idx | payload`, `u64::MAX` = empty) |
 
 Events: `1 freeze`, `2 melt`, `3 boil`, `4 condense`, `5 quench (payload = product species)`,
 `6 shatter (payload = species)`, `7 ignite`.
 
+### The entity word
+
+```text
+bits  0..16  vertical acceleration, jet included   i16, 1/16 m/s²
+bits 16..32  horizontal jet push along X           i16, 1/16 m/s
+bits 32..48  horizontal jet push along Z           i16, 1/16 m/s
+bits 48..56  drag                                   u8, 1/256 per tick
+bits 56..64  flags: submerged | updraft | breathable | positive buoyancy
+```
+
+The integrator calls it once per entity per tick with the entity's own density
+(700 for a boat, 1 050 for a swimmer, 2 100 for iron armour) and gets back
+everything the fluid does to it — no per-entity knowledge of the mod's internals.
+
+### `/hd` console
+
+The manifest's command tree is implemented in the module, not in the host, so a
+tunable changed from the console goes through the same `Tunables::apply_kv` path
+as the TOML loader:
+
+| command | effect |
+|---|---|
+| `/hd stats` | tick, active/processed/deferred voxels, chunks, asleep, mass, events |
+| `/hd book [chapter]` | grant the Atlas, optionally report one chapter |
+| `/hd probe <x> <y> <z>` | dump one voxel (species, mass, temperature, pressure, flow) |
+| `/hd set <x> <y> <z> <species> [mass] [temp]` | write a voxel through `Grid::set_world` |
+| `/hd wake <radius> [x y z]` | re-queue resident chunks ("the water looks stuck") |
+| `/hd profile <low\|default\|high>` | apply a preset, keeping the seed and book policy |
+
+Every reply is JSON: `{"ok":true,...}` or `{"ok":false,"error":"..."}`. A bad
+argument is a message, never a trap — the console has to stay usable when the
+simulation is the thing that is broken.
+
 ---
 
 ## Build and test
 
 ```bash
-cargo test --all-targets              # 149 tests: unit + end-to-end scenarios
+cargo test --all-targets              # 160 tests: unit + end-to-end scenarios
 cargo clippy --all-targets
 cargo doc --no-deps
 
@@ -222,7 +263,7 @@ cargo build --release --target wasm32-unknown-unknown
 The crate builds both `cdylib` (what the engine loads) and `rlib` (so the whole
 physics suite runs natively, no WASM runtime needed). Release profile: `opt-level
 = "s"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`
-→ **~95 KiB** of WASM.
+→ **~115 KiB** of WASM.
 
 CI (`.github/workflows/ci.yml`) runs clippy, the full test suite, `cargo doc`, a
 `wasm32-unknown-unknown` release build and a 2 MiB artifact-size gate.

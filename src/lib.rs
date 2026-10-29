@@ -1113,12 +1113,18 @@ mod tests {
         with_installed(s, || {
             let (deep_depth, deep_damage) =
                 entities::EntityForces::from_status_u32(horizon_entity_status(4, 3, 4));
-            assert!(deep_depth >= 30, "depth must count the column: {deep_depth}");
+            assert!(
+                deep_depth >= 30,
+                "depth must count the column: {deep_depth}"
+            );
             assert!(deep_damage > 0, "37 blocks must hurt: {deep_damage}");
 
             let (shallow_depth, shallow_damage) =
                 entities::EntityForces::from_status_u32(horizon_entity_status(4, 38, 4));
-            assert!(shallow_depth < deep_depth, "{shallow_depth} vs {deep_depth}");
+            assert!(
+                shallow_depth < deep_depth,
+                "{shallow_depth} vs {deep_depth}"
+            );
             assert_eq!(shallow_damage, 0, "a shallow dive is harmless");
         });
     }
