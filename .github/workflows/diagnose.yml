@@ -1,0 +1,43 @@
+name: Diagnose
+
+on:
+  push:
+    branches: ["arena/**"]
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - name: Collect diagnostics
+        run: |
+          set +e
+          {
+            echo "### cargo check (native)"
+            cargo check --all-targets 2>&1
+            echo "### cargo test"
+            cargo test --all-targets 2>&1
+            echo "### wasm build"
+            cargo build --release --target wasm32-unknown-unknown 2>&1
+            echo "### clippy"
+            cargo clippy --all-targets 2>&1 | grep -E "^(warning|error)" | sort | uniq -c | head -40
+          } > /tmp/report.txt
+          tail -c 55000 /tmp/report.txt > /tmp/report_tail.txt
+          wc -c /tmp/report.txt
+      - name: Post report as commit comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          body = open('/tmp/report_tail.txt').read()
+          payload = json.dumps({"body": "```\n" + body[-60000:] + "\n```"})
+          open('/tmp/payload.json','w').write(payload)
+          PY
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input /tmp/payload.json
