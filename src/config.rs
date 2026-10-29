@@ -232,7 +232,9 @@ impl Tunables {
                 };
                 match key {
                     "world.world_seed" => self.world_seed = i as u64,
-                    "thermo.ambient_c" => self.ambient_c = clamp16(i),
+                    // `world.ambient_c` is the historical name used by the
+                    // shipped manifest; accept both spellings.
+                    "thermo.ambient_c" | "world.ambient_c" => self.ambient_c = clamp16(i),
                     "world.rock_gradient_c" => self.rock_gradient_c = clamp16(i),
                     "world.sea_level_pressure" => {
                         self.sea_level_pressure = i.clamp(0, 65_535) as u16

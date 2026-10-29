@@ -1,198 +1,268 @@
 # HydroDynamics & Thermodynamics Realism
 
-A from-scratch **fluid, thermal and phase-transition simulation core** for the
-[Horizon](https://github.com/waterzyy/vibecode-test) voxel engine, written in Rust
-and compiled to `wasm32-unknown-unknown` as a `cdylib`.
+[![CI](https://github.com/waterzyy/vibecode-test/actions/workflows/ci.yml/badge.svg)](https://github.com/waterzyy/vibecode-test/actions)
+![target](https://img.shields.io/badge/target-wasm32--unknown--unknown-blueviolet)
+![deps](https://img.shields.io/badge/dependencies-none-success)
 
-No dependencies. No floating point in the tick. No allocations in the tick.
-No work at all for a settled world.
+A fluid, thermal and phase-transition core for the **Horizon** voxel engine,
+compiled to `wasm32-unknown-unknown` as a `cdylib`.
+
+It replaces vanilla's "flowing water levels" with a mass- and energy-conserving
+cellular automaton: water finds its level through a hydraulic head gradient,
+pressure grows with depth, magma boils pools into steam columns, steam condenses
+on cold ceilings and drips back down, and a breached dam knocks a player off
+their feet. Every kernel is integer-only, allocation-free and deterministic, so
+a settled world costs **zero CPU**.
+
+---
+
+## Кратко (по-русски)
+
+* **Термодинамика и фазовые переходы.** Каждый воксель хранит `mass 0..8`,
+  `temperature −273..+2000 °C` и `pressure` (250 Па). Вода замерзает в лёд
+  толщиной по массе, кипит при 100 °C (точка кипения растёт с давлением), пар
+  поднимается до холодного потолка и конденсируется каплями; лава отдаёт тепло
+  породе и при контакте с водой даёт обсидиан/пемзу/вулканическое стекло +
+  микровзрыв давления.
+* **Гидростатика.** Сообщающиеся сосуды выравнивают горизонт через градиент
+  гидравлического напора; давление столба растёт с глубиной и разрушает хрупкие
+  блоки (стекло, доски, листва), пробитая дамба даёт струю по Торричелли, а
+  Архимед топит броню и держит дерево и пемзу на плаву.
+* **Производительность.** Спящие чанки не считаются вообще; поиск шести
+  соседей — плоские 1D-массивы и битовые маски; вся арифметика целочисленная
+  (fixed-point); бюджет вокселей на тик переносит работу, а не отбрасывает её.
+* **Атлас гидролога.** `src/book.rs` генерирует иллюстрированную книгу
+  «Atlas of Fluid Physics» (NBT для `written_book` + JSON-двойник) и выдаёт её
+  при первом входе и респавне.
+* **Проверка.** `cargo test` — 146 тестов (юнит + интеграционные сценарии),
+  `wasm` собирается в ~95 КБ без единой внешней зависимости.
+
+---
+
+## Physics
+
+### Thermodynamics and phase transitions (`src/thermo.rs`)
+
+Every cell carries `mass ∈ 0..=8`, `temperature ∈ −273..=2000 °C` and a
+hydrostatic `pressure`. Three energy paths are integrated per tick:
+
+| Path | Model |
+|---|---|
+| Conduction | heat-capacity-weighted relaxation of each *pair* towards `T_eq = (CₐTₐ+C_bT_b)/(Cₐ+C_b)`, so `CₐTₐ+C_bT_b` is invariant to ±½ °C |
+| Radiation | integer Stefan–Boltzmann `q ∝ ε(T_k⁴ − T_amb⁴)` in deci-kelvin |
+| Geothermal | relaxation towards the chunk ambient, which the engine derives from depth |
+
+The phase machine is hysteretic (`freeze −1 °C` / `melt +1 °C`, `boil 100 °C` /
+`condense 95 °C`) so a cell cannot ping-pong between two species and keep its
+chunk awake forever:
 
 ```
- ┌──────────────────────────── Horizon engine (host) ───────────────────────────┐
- │  world_tick ─▶ horizon_tick()        player_join ─▶ horizon_on_player_join() │
- │  set_block  ─▶ horizon_set_block()   renderer    ─▶ horizon_event_pop()      │
- └───────────────────────────────────┬──────────────────────────────────────────┘
-                                     │  wasm32 ABI (integers only)
- ┌───────────────────────────────────▼──────────────────────────────────────────┐
- │ Sim                                                                          │
- │  Grid ── 24 × Chunk(16³, 32 KiB) ── active list (double-buffered)            │
- │   │                                                                          │
- │   ├─ hydro::tick_cell      gravity → communicating vessels → gas inversion   │
- │   ├─ hydro::update_pressure hydrostatic head  p = p_above + ρg·m/8           │
- │   ├─ thermo::tick_cell      conduction → radiation → phase machine → quench  │
- │   ├─ hydro::fracture        brittle blocks give way to the head              │
- │   └─ grid.update_sleep      quiet chunks fall asleep (0 CPU footprint)       │
- └──────────────────────────────────────────────────────────────────────────────┘
+Water ──(−1 °C)──▶ Ice ──(+1 °C)──▶ Water ──(100 °C @1 atm)──▶ Steam
+Lava  ──(<700 °C)──▶ Basalt        Steam ──(≤ condense point)──▶ Water droplets
+Lava  + water ──▶ Obsidian | Volcanic glass | Pumice + Steam + 💥 pressure spike
+Wood/Plank/Leaves ──(≥320 °C)──▶ Fire ──(<150 °C)──▶ Air
+```
+
+* **Ice thickness follows the freezing mass** — `mass 1..3` is a thin sheet,
+  `mass 8` a solid block; freezing releases latent heat, which is why a pond
+  freezes from the surface down.
+* **The boiling point tracks pressure** through an integer Clausius–Clapeyron
+  (`+28 °C` per doubling): a sealed shaft boils at ~130 °C, a vacuum kettle at
+  ~45 °C. Water under a solid ceiling therefore *cannot* boil — pressure first.
+* **Convection** nucleates above magma/lava/fire, sets `BUBBLE|UPDRAFT` flags
+  that travel up the water column, and the entity layer turns them into an
+  updraft (see below).
+* **Quenching** is a steam explosion: the water flashes to vapour, the lava
+  freezes into obsidian (cold, deep water), volcanic glass (already-cooling
+  melt) or pumice (slow chilling), and a pressure wave shatters brittle blocks
+  in the blast radius.
+
+### Hydrostatics and pressure (`src/hydro.rs`)
+
+```
+p[i] = p[above] + ρg · mass[i]/8          (hydrostatic recurrence, 1 neighbour read)
+H[i] = mass[i] + column_above[i]          (hydraulic head, straight from p[i])
+```
+
+Water moves horizontally from the higher head to the lower one, by at most half
+the head difference — the discrete form of **communicating vessels**. Because a
+pair can never overshoot (`Δ ≤ q/2`) and moves need a head margin (`q ≥ 2`), a
+levelled body is a true fixed point: no oscillation, no cycle, and the chunk can
+fall asleep. A *supported* cell (a full block, or something standing on it) may
+additionally push one unit into a completely empty neighbour — that neutral move
+is a one-way ratchet, which is what lets a thin trickle cross a flat floor.
+
+* **Toricelli jets** — `v = √(2gh)` in fixed point, so a 1 m head yields ~4.4 m/s
+  and a 10 m head ~14 m/s, applied to entities standing in the stream.
+* **Fracture** — the excess head is compared against each material's yield
+  pressure: leaves burst at 0.65 m, planks at 2.75 m, glass at 2 m, ice at 6 m,
+  stone holds 35 m, obsidian 40 m.
+* **Buoyancy** — `a = g(ρ_fluid−ρ_entity)/ρ_entity`: oak floats (+0.42 g), iron
+  armour sinks (−0.87 g), lava floats even a golem.
+* **Updrafts** are entrainment, not buoyancy: a two-phase bubble column imposes
+  its own velocity, so `a = max(buoyancy, bubble_lift)` lifts even a fully
+  armoured diver out of a boiling cauldron.
+
+### Entities (`src/entities.rs`)
+
+Archimedes, drag (`180/256` per tick in water vs `4/256` in air), jet push,
+terminal velocity of loose blocks, breathability and the **compression-injury**
+curve of the Atlas' diving chapter (nothing below 24 m, quadratic after that,
+saturating at 40 half-hearts/s).
+
+---
+
+## Performance engineering
+
+| Technique | Where | Effect |
+|---|---|---|
+| **Sleep / wake grid** | `grid.rs` — `front`/`back` work lists, `ASLEEP` chunks | a settled basin costs one `u16` comparison per tick, no voxel work at all |
+| **Double-buffered active list** | `grid.rs` | a voxel woken *by* the current tick is evaluated next tick: no double integration, no cascading waterfalls in one tick |
+| **Bitmask neighbourhood** | `dirs.rs` — `BORDER_MASKS[4096]`, `step()` | six comparisons per neighbour query collapse into a table lookup; interior steps are a bare pointer add |
+| **Fixed-point math** | `units.rs` | no `f32`/`f64` anywhere in the tick path; `i16` temperature, `u16` pressure (250 Pa), integer sqrt/log2/exp helpers |
+| **Flat, allocation-free storage** | `voxel.rs`, `grid.rs` | `Voxel` is exactly 8 B, a chunk is 32 KiB of `[Voxel; 4096]` (Y-major, so a column walk stays on one cache line set); the only heap allocation in the whole mod is the chunk pool at world load |
+| **Tick budget / temporal LOD** | `lib.rs`, `grid.rs::rotate` | at most `perf.tick_budget` voxels per tick; the remainder is *deferred one tick*, never dropped |
+| **Determinism** | `units.rs::chunk_seed` | per-chunk LCG seeded from the world seed + coordinates, fixed iteration order: server and client replays are bit-identical |
+
+Memory: 24 resident chunks × 32 KiB ≈ 768 KiB — inside the manifest's 16 MiB
+`memory` budget, with room for the book blobs.
+
+---
+
+## Inside the loop
+
+```
+horizon_tick() ─▶ Sim::tick()
+                    ├─ grid.begin_tick()             roll the work lists
+                    ├─ for each active voxel (≤ budget):
+                    │    hydro::tick_cell()          pressure → gravity → levelling → buoyancy
+                    │    hydro::update_pressure()    hydrostatic head
+                    │    thermo::tick_cell()         conduction → radiation → phases → convection
+                    │    hydro::fracture()           brittle blocks give way
+                    │    settle() / wake_next()      re-queue or sleep
+                    ├─ grid.rotate(processed)        deferred work → next tick
+                    ├─ grid.update_sleep()           quiet chunks fall asleep
+                    └─ stats / events
+```
+
+| module | responsibility |
+|---|---|
+| `units.rs` | fixed-point scalars, integer roots/logs, deterministic RNG |
+| `dirs.rs` | six-neighbourhood, flat index layout, border bitmasks |
+| `voxel.rs` | the 8-byte voxel + material database (density, conductivity, yield, colours) |
+| `config.rs` | tunables mirrored from `horizon-mod.toml` |
+| `grid.rs` | chunk pool, active list, sleep/wake, save/load, diagnostics |
+| `hydro.rs` | communicating vessels, head, jets, buoyancy, fracture |
+| `thermo.rs` | conduction, radiation, phase machine, quench, convection |
+| `entities.rs` | Archimedes, updrafts, drag, compression injuries |
+| `book.rs` | the generated *Atlas of Fluid Physics* (JSON + NBT) |
+| `lib.rs` | the WASM ABI, the sim facade, the event ring |
+
+---
+
+## The Atlas of Fluid Physics
+
+`src/book.rs` builds the in-game written book from the live tunables, so the
+numbers a player reads are the numbers the simulator uses.
+
+| Chapter | Content |
+|---|---|
+| Сообщающиеся сосуды и строительство дамб | U-tubes, culverts **two blocks high**, dam profiles, pressure arrows |
+| Термальные источники: подогрев водоёмов и плавка | magma-heated pools, bubble columns, boiling point vs. pressure |
+| Паровые двигатели и конденсация в шахтах | shafts, cold roofs, drip-back, sealed-volume boiling |
+| Опасность глубоких погружений: компрессионные травмы | the 24 m free zone, the quadratic damage curve |
+| Внутри симуляции: почему это быстро | sleep/wake, bitmasks, fixed point, budget |
+| Справочник: материалы и константы | the material table straight out of `voxel::MATERIALS` |
+
+Export: `horizon_book_nbt_ptr/len` (a `written_book` NBT blob the host hands
+straight to the inventory) and `horizon_book_json_ptr/len` (the same content as
+JSON text components, one `#RRGGBB` colour per chapter). `horizon_on_player_join`
+grants it on first join and on respawn; the byte length is the return value.
+Illustration briefs live in [`docs/book-assets.md`](docs/book-assets.md).
+
+---
+
+## WASM ABI
+
+All entry points are `extern "C"` with integer arguments only; the module has
+**zero host imports** and needs no allocator beyond its own chunk pool.
+
+| export | signature | purpose |
+|---|---|---|
+| `horizon_api_version` | `() -> u32` | ABI handshake (`0x0001_0004`) |
+| `horizon_on_world_load` | `(seed_hi, seed_lo, ambient_c) -> u32` | build the grid + the Atlas, return its NBT length |
+| `horizon_configure` | `(k_ptr, k_len, v_ptr, v_len) -> u32` | one `key = value` from the manifest (1 = accepted) |
+| `horizon_tick` | `() -> u32` | one world tick; returns voxels evaluated |
+| `horizon_on_player_join` | `(player, is_respawn) -> u32` | grant the Atlas, returns the blob length |
+| `horizon_book_nbt_ptr` / `_len` | `() -> *const u8` / `u32` | written-book NBT |
+| `horizon_book_json_ptr` / `_len` | `() -> *const u8` / `u32` | JSON twin of the book |
+| `horizon_get_block` | `(x, y, z) -> u64` | packed voxel (`Voxel::to_u64`) |
+| `horizon_set_block` | `(x, y, z, word) -> u32` | write + wake the neighbourhood |
+| `horizon_probe` | `(x, y, z) -> u32` | species/mass/temp/pressure for the HUD |
+| `horizon_stats_ptr` | `() -> *const u32` | 8 diagnostics words: active, processed, requeued, chunks, asleep, mass, tick, events |
+| `horizon_event_pop` | `() -> u64` | next physics event (`kind | slot | idx | payload`, `u64::MAX` = empty) |
+
+Events: `1 freeze`, `2 melt`, `3 boil`, `4 condense`, `5 quench (payload = product species)`,
+`6 shatter (payload = species)`, `7 ignite`.
+
+---
+
+## Build and test
+
+```bash
+cargo test --all-targets              # 146 tests: unit + end-to-end scenarios
+cargo clippy --all-targets
+cargo doc --no-deps
+
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
+./scripts/build-wasm.sh --opt          # optional wasm-opt -Oz pass + size report
+```
+
+The crate builds both `cdylib` (what the engine loads) and `rlib` (so the whole
+physics suite runs natively, no WASM runtime needed). Release profile: `opt-level
+= "s"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`
+→ **~95 KiB** of WASM.
+
+CI (`.github/workflows/ci.yml`) runs clippy, the full test suite, `cargo doc`, a
+`wasm32-unknown-unknown` release build and a 2 MiB artifact-size gate.
+
+## Repository layout
+
+```
+horizon-mod.toml     mod manifest: fluids, gases, blocks, the book, events, tunables
+Cargo.toml           cdylib + rlib, zero dependencies
+rust-toolchain.toml  stable + wasm32-unknown-unknown
+src/                 the engine (see the module table above)
+tests/physics.rs     end-to-end scenarios driven through the public API only
+docs/                illustration briefs for the Atlas
+scripts/             wasm build helper
 ```
 
 ---
 
-## 1. What it simulates
+## Known and deliberate limitations
 
-### Thermodynamics and phase transitions
+The automaton is local by construction (that is what makes it fast and
+sleepable), so a few situations are modelled with an explicit, documented
+compromise instead of a global solve:
 
-Every voxel — fluid, gas **or solid** — stores `mass: u8 (0..8)`,
-`temperature: i16 (-273..2000 °C)` and `pressure: u16` (quarter-pascals). Solids
-carry temperature too, which is what lets lava heat the basalt around it and an
-ice sheet chill the water beneath it.
+* **A plugged gallery transmits pressure but not mass.** A one-block-high tunnel
+  packed to 8/8 along its whole length drives jets, fracture and the boiling
+  point, but water will not flow through it: doing so needs an incompressible
+  global solve. The Atlas therefore tells players to build culverts **two blocks
+  high** — which is what real dams do anyway.
+* **A single unit on bare rock is a settled film.** Without support from above,
+  one eighth of a block cannot push itself sideways; that is the resolution floor
+  that keeps settled puddles asleep instead of letting single units roam forever.
+* **Rock products leave the water tally.** Water/ice/steam/snow are a closed
+  cycle and are conserved exactly (`Chunk::total_mass`); lava solidifying into
+  obsidian, pumice or basalt is a phase change into *terrain*, and solids carry
+  `MASS_FULL` as a "not hollow" marker rather than a conserved amount.
+* **Gas heat capacity is per voxel, not per kilogram** — deliberately generous
+  relaxation is capped at 8 °C/tick so a steam plume survives long enough to
+  travel up a shaft.
 
-| Interaction | Implementation |
-|---|---|
-| Water below 0 °C freezes | `thermo::freeze_cell`, ice keeps the *mass*, so the sheet is thin at mass 1–3 and solid at 8 (thickness = mass) |
-| Freezing releases latent heat | Ice forms **warmer** than the water it came from (hysteresis: freeze −1 °C, melt +1 °C) so nothing ping-pongs |
-| Water over hot blocks warms up | Conduction is a heat-capacity-weighted relaxation; a lava cell heats stone, which heats the pool above |
-| Ascending convection bubbles | `thermo::nucleate` marks `BUBBLE`/`UPDRAFT`; the flags travel up the water column one cell per tick and the entity layer turns them into lift |
-| Water at the boiling point → steam | `thermo::boil_cell` moves mass into the cell above, applies evaporative cooling, conserves mass exactly. Sealed containers *cannot* boil: pressure raises the boiling point first (pressure cooker) |
-| Steam rises to a solid ceiling | `hydro::try_rise` + density inversion (steam swaps with water, water sinks) |
-| Steam condenses on a cold ceiling | `Class::Solid` at ≤ 45 °C condenses the vapour; the droplets fall back down the shaft |
-| Lava gives heat to the rock | `Material::conductivity` from a real block database; strong 80 W/m·K metal vs 0.6 W/m·K water ordering is preserved |
-| Boiling water meets lava | `thermo::try_quench`: flash vaporisation, pressure spike, micro-explosion — **obsidian** (cold deep water), **volcanic glass** (hard quench) or **pumice** (shallow splash, and it floats) |
-| Metal, wood, fire, snow | Melting (iron 1 538 °C), ignition (320 °C), burnout, snow melting — all in the same phase machine |
-
-### Hydrostatics and pressure
-
-* **Communicating vessels.** The levelling rule moves `(m_self − m_other)/2` into
-  the emptier neighbour. Halving a *difference* makes the equal level a true
-  fixed point: a U-tube reaches `|Δh| ≤ 1/8 block` and stops — which is also why
-  the chunk can fall asleep.
-* **Hydrostatic head.** `p[i] = p[above] + ρ·g·(mass/8)`, evaluated locally from
-  the column above; pressure grows one block of water per block of depth and
-  converges in a few ticks.
-* **Jets.** Torricelli's law in fixed point, `v = √(2gh)` in 1/16 m/s:
-  a 1-block head → ~4.4 m/s, a 10-block head → ~14 m/s. The jet pushes
-  entities (see `hydro::jet_velocity` / `entities::jet_push`).
-* **Fracture.** Pressurised cells grind brittle neighbours down using the
-  material yield pressures: leaves ≈ 0.7 m, glass ≈ 2 m, planks ≈ 2.75 m,
-  dirt 8 m, stone 35 m, obsidian 40 m, bedrock never.
-* **Archimedes.** `a = g(ρ_fluid − ρ_entity)/ρ_entity`, with the *actually
-  present* density (a half-full water block weighs half). Oak (700 kg/m³) floats,
-  iron armour (7 870) sinks, pumice (600) floats *up through* water, lava
-  (2 600) floats a stone golem.
-
-### Extreme optimisation
-
-1. **Sleep / wake grid.** Each chunk tracks how many of its voxels are on the
-   active list. No active voxels for 20 ticks → the chunk is marked `ASLEEP`;
-   every kernel skips it in O(1). A settled basin costs **zero voxel
-   evaluations** — measured by `Sim::tick()` returning `0`.
-2. **Bitmask neighbourhood.** Chunks are flat `[Voxel; 4096]` arrays, Y-major,
-   indexed `(y<<8)|(z<<4)|x`. A precomputed `const` border-mask table
-   (`dirs::BORDER_MASKS`, 4 KiB) answers "does this direction leave the chunk?"
-   without six comparisons; the interior step is a single integer add. No heap
-   access, no `HashMap`, no allocation anywhere in the tick.
-3. **Fixed point.** Temperatures in °C, pressure in ¼ Pa, mass in ⅛ blocks,
-   velocity in 1/16 m/s, conduction in Q16, radiation in deci-kelvin T⁴. Integer
-   square roots use the digit-by-digit bit-pair method (no divides); the thermal
-   solver's per-pair energy invariant keeps rounding drift at ±½ °C.
-4. **Budgeted, deterministic scheduling.** At most `tick_budget` voxels per tick;
-   the remainder is deferred to the next tick instead of freezing the server.
-   Work lists are double-buffered, so a cell is evaluated **at most once per
-   tick** (no 100-block waterfalls in one frame) and arrival order never changes
-   the result.
-
-## 2. In-game education: "Atlas of Fluid Physics"
-
-On first join (and on respawn) the player receives a generated, illustrated,
-colour-formatted book. The content is compiled into the WASM module and
-serialised on demand — as **NBT** (a vanilla-openable written book) *and* as
-**JSON** text components for datapacks and the guide overlay.
-
-Chapters:
-
-1. **Communicating Vessels & Dam Engineering** — Сообщающиеся сосуды и строительство дамб
-2. **Thermal Springs: Heating Pools, Melting Metals** — Термальные источники
-3. **Steam Engines & Condensation in the Mines** — Паровые двигатели и конденсация в шахтах
-4. **Deep Diving: Compression Injuries** — Опасность глубоких погружений: компрессионные травмы
-5. **Inside the Simulation** — почему это быстро (sleep grid, bitmasks, fixed point)
-6. **Field Reference** — *generated at runtime* from the material database and the
-   live `[tunables]`, so a modpack that boils water at 80 °C gets a book that
-   says 80 °C
-
-Pages carry hex colours, chapter ribbons, illustration frames
-(`hydrodynamics:textures/book/*.png`), bullet lists, formula blocks and tables.
-
-## 3. Repository layout
-
-| Path | Contents |
-|---|---|
-| `Cargo.toml` | `crate-type = ["cdylib", "rlib"]`, size-first release profile |
-| `horizon-mod.toml` | engine manifest: exports, events, fluids, gases, blocks, book, commands, tunables, presets |
-| `src/lib.rs` | WASM entry points, tick orchestrator, event ring buffer |
-| `src/units.rs` | fixed-point types, integer roots, deterministic LCG |
-| `src/dirs.rs` | six-neighbourhood, flat chunk indexing, border bitmasks |
-| `src/voxel.rs` | the 8-byte voxel + real-world material database |
-| `src/config.rs` | `Tunables` and the `key = value` bridge |
-| `src/grid.rs` | chunk store, active work lists, sleep/wake, save/load |
-| `src/hydro.rs` | the communicating-vessels automaton, head, jets, fracture, buoyancy |
-| `src/thermo.rs` | conduction, radiation, geothermal, phase machine, quench |
-| `src/entities.rs` | Archimedes for entities, updrafts, drag, compression injuries |
-| `src/book.rs` | the Atlas generator (JSON + hand-written NBT encoder) |
-| `tests/physics.rs` | end-to-end physics scenarios |
-
-## 4. Build
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown
-# -> target/wasm32-unknown-unknown/release/hydrodynamics.wasm
-```
-
-Optional size pass (the module has no imports, so it links standalone):
-
-```bash
-wasm-opt -Oz --strip-debug hydrodynamics.wasm -o hydrodynamics.min.wasm
-```
-
-Native test suite (runs on the host, no WASM runtime needed):
-
-```bash
-cargo test --all-targets          # 100+ unit + integration assertions
-cargo clippy --all-targets -- -D warnings
-```
-
-## 5. WASM ABI
-
-All exports take and return integers; no Rust type ever crosses the boundary.
-
-| Export | Signature | Notes |
-|---|---|---|
-| `horizon_api_version` | `() -> u32` | `0x0001_0004` |
-| `horizon_on_world_load` | `(seed_hi: u32, seed_lo: u32, ambient_c: i32) -> u32` | returns the book NBT length |
-| `horizon_configure` | `(k_ptr, k_len, v_ptr, v_len) -> u32` | one `key = value` pair |
-| `horizon_tick` | `() -> u32` | voxels evaluated this tick |
-| `horizon_on_player_join` | `(player: u32, is_respawn: u32) -> u32` | grants the Atlas |
-| `horizon_book_nbt_ptr` / `_len` | `() -> *const u8` / `() -> u32` | written-book blob |
-| `horizon_book_json_ptr` / `_len` | `() -> *const u8` / `() -> u32` | JSON twin |
-| `horizon_get_block` / `horizon_set_block` | `(x,y,z) -> u64` / `(x,y,z,word) -> u32` | packed voxel |
-| `horizon_probe` | `(x,y,z) -> u32` | species/mass/temp/pressure for the HUD |
-| `horizon_stats_ptr` | `() -> *const u32` | `[active, processed, requeued, chunks, asleep, total_mass, tick, events]` |
-| `horizon_event_pop` | `() -> u64` | `kind|slot|index|payload`, `u64::MAX` when empty |
-
-The host owns the memory: pointers stay valid until the next `horizon_tick`.
-
-## 6. Tuning
-
-`horizon-mod.toml → [tunables]` is forwarded through `horizon_configure`. Unknown
-keys are ignored, unparsable values are no-ops, and every value is clamped by
-`Tunables::sanitize` so a hostile datapack cannot destabilise the solver
-(e.g. `thermo.conduction_q16` is capped at 0.5, the explicit-solver stability
-limit).
-
-Presets: `/hd profile low|default|high`
-(`Tunables::low_end()` / `DEFAULT` / `high_fidelity()`).
-
-## 7. Known limitations & next steps
-
-* Fluids are a cellular automaton on a 8-level mass field, not a Navier–Stokes
-  solver: there is no momentum field, so whirlpools and waves are approximated by
-  the jet vector, not simulated.
-* Gas volume does not expand with temperature (no ideal-gas law for steam yet);
-  pressure is hydrostatic + explosive spikes.
-* Boiling is limited by free volume above the cell, which is a deliberate design
-  choice that gives pressure cookers for free.
-* The book ships in English with Russian chapter subtitles; a `lang` layer for
-  full localisation is straightforward (all strings live in `src/book.rs`).
-
-## 8. License
+## License
 
 MIT OR Apache-2.0.

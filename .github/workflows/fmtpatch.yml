@@ -1,0 +1,40 @@
+name: FmtPatch
+
+on:
+  push:
+    branches: ["arena/**"]
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format and capture the patch
+        run: |
+          set +e
+          cargo fmt --all
+          git diff > /tmp/fmt.patch
+          wc -c /tmp/fmt.patch
+          python3 - <<'PY'
+          import json, os
+          data = open('/tmp/fmt.patch').read()
+          chunk = 50000
+          parts = [data[i:i+chunk] for i in range(0, max(len(data),1), chunk)] or ['']
+          for n, part in enumerate(parts):
+              body = "FMT-PATCH %d/%d\n```diff\n%s\n```" % (n+1, len(parts), part)
+              open('/tmp/p%d.json' % n, 'w').write(json.dumps({"body": body}))
+          open('/tmp/count','w').write(str(len(parts)))
+          PY
+      - name: Post
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          n=$(cat /tmp/count)
+          for i in $(seq 0 $((n-1))); do
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input "/tmp/p$i.json" >/dev/null
+          done

@@ -157,20 +157,20 @@ melts_into = "hydrodynamics:water"
 id          = "hydrodynamics:obsidian"
 species_id  = 7
 quench_of   = "hydrodynamics:lava"
-yield_pressure = 16000
+yield_pressure = 1600          # mirrors voxel::MATERIALS (250 Pa units, 40/block)
 
 [[block]]
 id          = "hydrodynamics:pumice"
 species_id  = 8
 quench_of   = "hydrodynamics:lava"
 density     = 600                          # floats: the buoyancy kernel honours it
-yield_pressure = 900
+yield_pressure = 90
 
 [[block]]
 id          = "hydrodynamics:volcanic_glass"
 species_id  = 9
 quench_of   = "hydrodynamics:lava"
-yield_pressure = 700
+yield_pressure = 70
 
 [[block]]
 id         = "hydrodynamics:magma"
@@ -262,7 +262,10 @@ children = [
 #  Tunables — forwarded verbatim to `horizon_configure`
 # -----------------------------------------------------------------------------
 [tunables]
-"world.ambient_c"              = 20
+# Every key below is routed through `horizon_configure` → `Tunables::apply_kv`.
+# An unknown key is rejected (the entry point answers 0), so keeping the names
+# in sync with `src/config.rs` matters more than the values do.
+"thermo.ambient_c"             = 20
 "world.rock_gradient_c"        = 6
 "world.sea_level_pressure"     = 405
 "world.pressure_per_block"     = 40
@@ -272,7 +275,7 @@ children = [
 "hydro.horizontal_rate_eighths" = 8
 "hydro.pressure_decay_256"     = 12
 "hydro.jet_velocity_per_head"  = 3
-"hydro.damage_threshold"       = 1200
+"hydro.damage_threshold"       = 40    # 1 block of head == 40; glass yields at 80
 "hydro.damage_break"           = 12
 "thermo.conduction_q16"        = 21000
 "thermo.radiation_scale"       = 96
