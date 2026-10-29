@@ -618,3 +618,49 @@ fn flow_hints_encode_the_direction() {
     );
     assert!(v.has(flags::MOVED));
 }
+
+#[test]
+fn tmp_dam_probe() {
+    let (mut sim, slot) = world();
+    stone_floor(&mut sim, slot, 1);
+    for y in 2..13 {
+        for z in 0..16 {
+            put(&mut sim, slot, 8, y, z, Voxel::stone(20));
+        }
+    }
+    put(&mut sim, slot, 8, 2, 8, Voxel::AIR);
+    for y in 2..9 {
+        for x in 2..8 {
+            for z in 2..14 {
+                put(&mut sim, slot, x, y, z, Voxel::water(20));
+            }
+        }
+    }
+    sim.grid.wake_all(slot);
+    let mut log = format!("initial column(4,8)={} total={}\n", column(&sim, slot, 4, 8), sim.grid.total_mass());
+    for t in 0..400 {
+        sim.tick();
+        if t % 25 == 0 || t > 380 {
+            let mut beyond = 0u32;
+            for x in 9..16 {
+                for y in 2..13 {
+                    for z in 0..16 {
+                        let v = get(&sim, slot, x, y, z);
+                        if v.species() == Species::Water {
+                            beyond += v.mass as u32;
+                        }
+                    }
+                }
+            }
+            log.push_str(&format!(
+                "t={t} col(4,8)={} col(7,8)={} beyond={} mass={} processed={}\n",
+                column(&sim, slot, 4, 8),
+                column(&sim, slot, 7, 8),
+                beyond,
+                sim.grid.total_mass(),
+                sim.grid.stats.processed
+            ));
+        }
+    }
+    panic!("{log}");
+}
