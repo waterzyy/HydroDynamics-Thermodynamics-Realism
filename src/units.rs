@@ -335,7 +335,9 @@ pub const fn clamp_u8(v: i32, lo: u8, hi: u8) -> u8 {
 #[inline]
 #[must_use]
 pub const fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407)
+    state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
 }
 
 /// Extracts a `u32` from an LCG state.
@@ -399,7 +401,10 @@ mod tests {
         let sq = 4_294_967_294u64 * 4_294_967_294u64;
         assert_eq!(isqrt_u64(sq), 4_294_967_294);
         // ... and the largest input that still rounds down to it.
-        assert_eq!(isqrt_u64(4_294_967_295u64 * 4_294_967_295u64 - 1), 4_294_967_294);
+        assert_eq!(
+            isqrt_u64(4_294_967_295u64 * 4_294_967_295u64 - 1),
+            4_294_967_294
+        );
     }
 
     #[test]
@@ -413,7 +418,10 @@ mod tests {
     #[test]
     fn lerp_does_not_overflow_on_extremes() {
         let v = lerp_i32(i32::MIN / 2, i32::MAX / 2, 50, 100);
-        assert!(v < 0, "midpoint of a symmetric range should stay inside: {v}");
+        assert!(
+            v < 0,
+            "midpoint of a symmetric range should stay inside: {v}"
+        );
     }
 
     #[test]

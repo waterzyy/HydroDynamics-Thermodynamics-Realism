@@ -305,12 +305,10 @@ impl Sim {
             let (slot, idx) = Grid::unpack(entry);
 
             // ---- hydrodynamics ------------------------------------------
+            // `tick_cell` refreshes the cell's own hydrostatic pressure as its
+            // first step, so the loop must not ask for it a second time: one
+            // neighbour read per active voxel per tick is the whole point.
             let flow = hydro::tick_cell(&mut self.grid, slot, idx, &self.tunables);
-            let mut pressure_changed = false;
-            if self.grid.voxel(slot, idx).is_fluid() {
-                pressure_changed =
-                    hydro::update_pressure(&mut self.grid, slot, idx, &self.tunables);
-            }
 
             // ---- thermodynamics -----------------------------------------
             let thermal = thermo::tick_cell(&mut self.grid, slot, idx, &self.tunables);
@@ -319,7 +317,7 @@ impl Sim {
             }
 
             // ---- pressure fracture --------------------------------------
-            if pressure_changed || flow.changed {
+            if flow.changed {
                 if let Some(ev) = hydro::fracture(&mut self.grid, slot, idx, &self.tunables) {
                     self.events.push(ev);
                 }
@@ -329,7 +327,7 @@ impl Sim {
             // Clear the queue flag first: `wake_next` is a no-op while `ACTIVE`
             // is set, so the order matters.
             self.grid.settle(slot, idx);
-            let still_active = flow.active || thermal.active || pressure_changed;
+            let still_active = flow.active || thermal.active;
             if still_active {
                 self.grid.wake_next(slot, idx);
             }
@@ -346,7 +344,12 @@ impl Sim {
     /// Copies the diagnostics into the flat array the host reads.
     pub fn sync_stats(&mut self) {
         let s: Stats = self.grid.stats;
-        detach_stats(&mut self.stats_out, s, self.tick_count, self.events.len() as u32);
+        detach_stats(
+            &mut self.stats_out,
+            s,
+            self.tick_count,
+            self.events.len() as u32,
+        );
     }
 
     /// Writes a block into the world (used by `/hd set`, worldgen and tests).
@@ -566,14 +569,8 @@ pub extern "C" fn horizon_event_pop() -> u64 {
         Some(Event::Melt { slot, idx, mass }) => encode_event(2, slot, idx, mass),
         Some(Event::Boil { slot, idx, mass }) => encode_event(3, slot, idx, mass),
         Some(Event::Condense { slot, idx, mass }) => encode_event(4, slot, idx, mass),
-        Some(Event::Quench { slot, idx, result }) => {
-            encode_event(5, slot, idx, result.as_u8())
-        }
-        Some(Event::Shatter {
-            slot,
-            idx,
-            species,
-        }) => encode_event(6, slot, idx, species.as_u8()),
+        Some(Event::Quench { slot, idx, result }) => encode_event(5, slot, idx, result.as_u8()),
+        Some(Event::Shatter { slot, idx, species }) => encode_event(6, slot, idx, species.as_u8()),
         Some(Event::Ignite { slot, idx }) => encode_event(7, slot, idx, 0),
         None => u64::MAX,
     })
@@ -721,7 +718,10 @@ mod tests {
         }
         assert!(s.grid.chunks[sl].is_asleep());
         s.set_block(1, 2, 1, Voxel::water(20));
-        assert!(!s.grid.chunks[sl].is_asleep(), "a write must wake the chunk");
+        assert!(
+            !s.grid.chunks[sl].is_asleep(),
+            "a write must wake the chunk"
+        );
         assert!(s.tick() > 0);
     }
 
@@ -779,7 +779,8 @@ mod tests {
         for (x, z) in [(4, 5), (5, 5), (6, 5), (5, 4), (5, 6)] {
             s.grid.put(sl, dirs::index(x, 4, z), Voxel::stone(20));
         }
-        s.grid.put(sl, dirs::index(5, 5, 5), Voxel::new(Species::Lava, 1_150));
+        s.grid
+            .put(sl, dirs::index(5, 5, 5), Voxel::new(Species::Lava, 1_150));
         let mut w = Voxel::water(20);
         w.mass = 8;
         s.grid.put(sl, dirs::index(5, 6, 5), w);
@@ -830,7 +831,11 @@ mod tests {
         for _ in 0..120 {
             s.tick();
         }
-        assert_eq!(s.grid.total_mass(), before, "the dam break must conserve mass");
+        assert_eq!(
+            s.grid.total_mass(),
+            before,
+            "the dam break must conserve mass"
+        );
         // Water must have reached the far side of the wall.
         let mut crossed = false;
         for x in 9..16 {

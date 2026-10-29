@@ -342,15 +342,15 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         name: "Water",
         class: Class::Liquid,
         density: 1000,
-        conductivity: 6,      // 0.60 W/(m·K)
-        heat_capacity: 419,   // 4186 J/(kg·K)
+        conductivity: 6,    // 0.60 W/(m·K)
+        heat_capacity: 419, // 4186 J/(kg·K)
         melt_point: 0,
         melts_into: Species::Water,
         freezes_into: Species::Ice,
         boil_point: 100,
         boils_into: Species::Steam,
-        latent_fusion: 334,   // kJ/kg
-        latent_vapor: 2257,   // kJ/kg
+        latent_fusion: 334, // kJ/kg
+        latent_vapor: 2257, // kJ/kg
         emissivity: 96,
         yield_pressure: u16::MAX,
         light: 0,
@@ -362,8 +362,8 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         name: "Ice",
         class: Class::Solid,
         density: 917,
-        conductivity: 22,     // 2.2 W/(m·K)
-        heat_capacity: 205,   // 2050 J/(kg·K)
+        conductivity: 22,   // 2.2 W/(m·K)
+        heat_capacity: 205, // 2050 J/(kg·K)
         melt_point: 0,
         melts_into: Species::Water,
         freezes_into: Species::Ice,
@@ -381,9 +381,9 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
     Material {
         name: "Steam",
         class: Class::Gas,
-        density: 1,           // 0.6 kg/m³ at 100 °C — stored as 1, see `gas_mass_to_density`
-        conductivity: 2,      // 0.025 W/(m·K)
-        heat_capacity: 201,   // 2010 J/(kg·K)
+        density: 1,         // 0.6 kg/m³ at 100 °C — stored as 1, see `gas_mass_to_density`
+        conductivity: 2,    // 0.025 W/(m·K)
+        heat_capacity: 201, // 2010 J/(kg·K)
         melt_point: i16::MIN,
         melts_into: Species::Steam,
         freezes_into: Species::Steam,
@@ -401,10 +401,10 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
     Material {
         name: "Lava",
         class: Class::Liquid,
-        density: 2600,        // basalt melt
-        conductivity: 17,     // 1.7 W/(m·K)
-        heat_capacity: 84,    // 840 J/(kg·K) — actually 0.84 kJ/(kg·K)
-        melt_point: 1_050,    // solidus of basalt
+        density: 2600,     // basalt melt
+        conductivity: 17,  // 1.7 W/(m·K)
+        heat_capacity: 84, // 840 J/(kg·K) — actually 0.84 kJ/(kg·K)
+        melt_point: 1_050, // solidus of basalt
         melts_into: Species::Lava,
         freezes_into: Species::Basalt,
         boil_point: i16::MAX,
@@ -481,7 +481,7 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
     Material {
         name: "Pumice",
         class: Class::Solid,
-        density: 600,          // floats on water — drives the buoyancy kernel
+        density: 600, // floats on water — drives the buoyancy kernel
         conductivity: 3,
         heat_capacity: 84,
         melt_point: 900,
@@ -512,7 +512,7 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         latent_fusion: 400,
         latent_vapor: 0,
         emissivity: 70,
-        yield_pressure: 70,   // very brittle
+        yield_pressure: 70, // very brittle
         light: 0,
         solubility: 0,
         map_color: 0x2E_20_34,
@@ -584,7 +584,7 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         density: 1600,
         conductivity: 3,
         heat_capacity: 80,
-        melt_point: 1_700,     // glass transition
+        melt_point: 1_700, // glass transition
         melts_into: Species::VolcanicGlass,
         freezes_into: Species::Sand,
         boil_point: i16::MAX,
@@ -601,10 +601,10 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
     Material {
         name: "Wood",
         class: Class::Solid,
-        density: 700,          // oak — floats
+        density: 700, // oak — floats
         conductivity: 1,
-        heat_capacity: 170,    // 1700 J/(kg·K)
-        melt_point: 300,       // chars/ignites; handled by the fire kernel
+        heat_capacity: 170, // 1700 J/(kg·K)
+        melt_point: 300,    // chars/ignites; handled by the fire kernel
         melts_into: Species::Fire,
         freezes_into: Species::Wood,
         boil_point: i16::MAX,
@@ -652,7 +652,7 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         latent_fusion: 0,
         latent_vapor: 0,
         emissivity: 88,
-        yield_pressure: 26,   // water shoves foliage aside
+        yield_pressure: 26, // water shoves foliage aside
         light: 0,
         solubility: 20,
         map_color: 0x3C_8A_28,
@@ -672,7 +672,7 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         latent_fusion: 400,
         latent_vapor: 0,
         emissivity: 85,
-        yield_pressure: 80,   // a 2 m aquarium wall is already risky
+        yield_pressure: 80, // a 2 m aquarium wall is already risky
         light: 0,
         solubility: 0,
         map_color: 0xC8_E8_EE,
@@ -682,8 +682,8 @@ pub const MATERIALS: [Material; SPECIES_COUNT] = [
         name: "Metal",
         class: Class::Solid,
         density: 7870,
-        conductivity: 800,     // 80 W/(m·K)
-        heat_capacity: 45,     // 450 J/(kg·K)
+        conductivity: 800, // 80 W/(m·K)
+        heat_capacity: 45, // 450 J/(kg·K)
         melt_point: 1_538,
         melts_into: Species::MoltenMetal,
         freezes_into: Species::Metal,
@@ -825,13 +825,19 @@ const _: () = {
     assert!(MATERIALS.len() == SPECIES_COUNT);
     let mut i = 0;
     while i < SPECIES_COUNT {
-        assert!(MATERIALS[i].heat_capacity > 0, "heat capacity must be non-zero");
+        assert!(
+            MATERIALS[i].heat_capacity > 0,
+            "heat capacity must be non-zero"
+        );
         assert!(MATERIALS[i].density > 0, "density must be non-zero");
         i += 1;
     }
     // Water must be able to hold the most energy per volume: it is the thermal
     // ballast of the whole simulation.
-    assert!(MATERIALS[Species::Water as usize].heat_capacity > MATERIALS[Species::Stone as usize].heat_capacity);
+    assert!(
+        MATERIALS[Species::Water as usize].heat_capacity
+            > MATERIALS[Species::Stone as usize].heat_capacity
+    );
 };
 
 // ---------------------------------------------------------------------------
@@ -1229,10 +1235,22 @@ mod tests {
     fn materials_are_physically_sane() {
         let water = Species::Water.material();
         let stone = Species::Stone.material();
-        assert!(water.density < stone.density, "water must be lighter than stone");
-        assert!(Species::Wood.density() < Species::Water.density(), "wood must float");
-        assert!(Species::Pumice.density() < Species::Water.density(), "pumice must float");
-        assert!(Species::Metal.density() > Species::Water.density(), "metal must sink");
+        assert!(
+            water.density < stone.density,
+            "water must be lighter than stone"
+        );
+        assert!(
+            Species::Wood.density() < Species::Water.density(),
+            "wood must float"
+        );
+        assert!(
+            Species::Pumice.density() < Species::Water.density(),
+            "pumice must float"
+        );
+        assert!(
+            Species::Metal.density() > Species::Water.density(),
+            "metal must sink"
+        );
         assert!(Species::Glass.yield_pressure() < Species::Stone.yield_pressure());
         // Glass bursts at ~2 blocks of water: 2 * 40 = 80 units.
         assert_eq!(Species::Glass.yield_pressure(), 80);
@@ -1269,7 +1287,11 @@ mod tests {
         assert_eq!(aux::damage(a), 5);
         let a = aux::add_damage(a, 200);
         assert_eq!(aux::damage(a), 15, "damage must saturate");
-        assert_eq!(aux::flow_dir(a), crate::dirs::DIR_POS_Y, "flow dir preserved");
+        assert_eq!(
+            aux::flow_dir(a),
+            crate::dirs::DIR_POS_Y,
+            "flow dir preserved"
+        );
     }
 
     #[test]
@@ -1286,7 +1308,8 @@ mod tests {
     #[test]
     fn volumetric_capacity_orders_water_above_rock() {
         assert!(
-            Voxel::water(20).volumetric_heat_capacity() > Voxel::stone(20).volumetric_heat_capacity()
+            Voxel::water(20).volumetric_heat_capacity()
+                > Voxel::stone(20).volumetric_heat_capacity()
         );
     }
 }

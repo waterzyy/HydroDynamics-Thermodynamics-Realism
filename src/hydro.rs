@@ -417,13 +417,7 @@ fn try_level(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<F
 /// Moves `amount` mass units from `src` into `dst`, honouring the target class.
 ///
 /// Returns the number of units actually transferred.
-fn pour(
-    grid: &mut Grid,
-    src: (usize, usize),
-    dst: Neighbor,
-    amount: u8,
-    dir: Dir,
-) -> Option<u8> {
+fn pour(grid: &mut Grid, src: (usize, usize), dst: Neighbor, amount: u8, dir: Dir) -> Option<u8> {
     let s = grid.voxel(src.0, src.1);
     let d = grid.chunks[dst.chunk].get(dst.index);
     if amount == 0 || amount > s.mass {
@@ -644,8 +638,8 @@ pub fn torricelli_velocity(head: u16, t: &Tunables) -> Vel {
     let per_block = t.pressure_per_block.max(1) as u32;
     let head = (head as u32).min(t.jet_max_head);
     let height_cm = (head * 100) / per_block; // height in centimetres
-    // v = sqrt(2·9.81·h) m/s, expressed in 1/16 m/s:
-    //   v16 = 16·sqrt(2·9.81·h)  →  v16² = 5023·h[cm]/100
+                                              // v = sqrt(2·9.81·h) m/s, expressed in 1/16 m/s:
+                                              //   v16 = 16·sqrt(2·9.81·h)  →  v16² = 5023·h[cm]/100
     let v16 = isqrt_u32((5_023 * height_cm) / 100);
     // `jet_velocity_per_head` is a tuning multiplier with a neutral value of 3.
     let scaled = (v16 * t.jet_velocity_per_head.max(1) as u32) / 3;
@@ -950,7 +944,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(g.total_mass(), before, "communicating vessels conserve mass");
+        assert_eq!(
+            g.total_mass(),
+            before,
+            "communicating vessels conserve mass"
+        );
         let left = column(&g, 4, 4) as i32;
         let right = column(&g, 11, 4) as i32;
         assert!(right > 0, "water must reach the second vessel");
@@ -982,6 +980,59 @@ mod tests {
             bottom >= top + expected - t.pressure_per_block,
             "pressure must grow by ~one block of water per block of depth: {bottom} vs {top}"
         );
+    }
+
+    #[test]
+    fn hydraulic_head_counts_the_column_above() {
+        let (mut g, t) = world();
+        let s = slot(&g);
+        // An eight-block column; the cells are poked directly so nothing
+        // moves while the pressure field settles.
+        for y in 2..10 {
+            g.put(s, dirs::index(5, y, 5), Voxel::water(20));
+        }
+        for _ in 0..12 {
+            for y in 2..10 {
+                update_pressure(&mut g, s, dirs::index(5, y, 5), &t);
+            }
+        }
+        let top = g.chunks[s].voxels[dirs::index(5, 9, 5)];
+        let bottom = g.chunks[s].voxels[dirs::index(5, 2, 5)];
+        // The surface cell has nothing standing on it ...
+        assert_eq!(column_above(top, &t), 0, "the top cell carries no column");
+        assert_eq!(hydraulic_head(top, &t), MASS_FULL as i32);
+        // ... while the deepest cell sits under seven blocks of water.
+        assert_eq!(column_above(bottom, &t), 7 * MASS_FULL as i32);
+        assert_eq!(hydraulic_head(bottom, &t), 8 * MASS_FULL as i32);
+        // An empty neighbour carries no head at all, which is what makes the
+        // surface gradient drive the flow into it.
+        assert_eq!(hydraulic_head(Voxel::AIR, &t), 0);
+    }
+
+    #[test]
+    fn a_supported_trickle_creeps_across_a_flat_floor() {
+        let (mut g, t) = world();
+        let s = slot(&g);
+        for x in 0..16 {
+            for z in 0..16 {
+                g.put(s, dirs::index(x, 1, z), Voxel::stone(20));
+            }
+        }
+        // One eighth of a block sitting in front of a full column: on its own it
+        // is a settled film, but the column behind it keeps pushing, so the
+        // trickle has to advance instead of stalling at the first frontier.
+        g.put(s, dirs::index(3, 2, 3), Voxel::water(20));
+        let mut trickle = Voxel::water(20);
+        trickle.mass = 1;
+        g.put(s, dirs::index(4, 2, 3), trickle);
+        for _ in 0..40 {
+            for z in 0..8 {
+                for x in 0..8 {
+                    tick_cell(&mut g, s, dirs::index(x, 2, z), &t);
+                }
+            }
+        }
+        assert!(column(&g, 6, 3) > 0, "the trickle must reach x=6");
     }
 
     #[test]
@@ -1067,7 +1118,10 @@ mod tests {
         let res = tick_cell(&mut g, s, idx, &t);
         // It may still spread sideways, but never up.
         assert_ne!(res.dir, Some(DIR_POS_Y));
-        assert_eq!(g.chunks[s].voxels[dirs::index(4, 5, 4)].species(), Species::Stone);
+        assert_eq!(
+            g.chunks[s].voxels[dirs::index(4, 5, 4)].species(),
+            Species::Stone
+        );
     }
 
     #[test]
@@ -1107,7 +1161,10 @@ mod tests {
         v.aux = aux::with_flow(0, DIR_POS_X);
         g.put(s, idx, v);
         let jet = jet_velocity(&g, s, idx, &t);
-        assert!(jet[0] > 100, "a 4 m head must produce a strong +X jet: {jet:?}");
+        assert!(
+            jet[0] > 100,
+            "a 4 m head must produce a strong +X jet: {jet:?}"
+        );
         assert_eq!(jet[1], 0);
     }
 
@@ -1197,7 +1254,10 @@ mod tests {
         for y in 4..8 {
             g.put(s, dirs::index(2, y, 2), Voxel::water(20));
         }
-        assert_eq!(column_mass_above(&g, s, dirs::index(2, 4, 2)), 3 * MASS_FULL as u32);
+        assert_eq!(
+            column_mass_above(&g, s, dirs::index(2, 4, 2)),
+            3 * MASS_FULL as u32
+        );
         assert_eq!(column_mass_above(&g, s, dirs::index(2, 7, 2)), 0);
     }
 

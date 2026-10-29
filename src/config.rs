@@ -120,7 +120,6 @@ impl Default for Tunables {
     }
 }
 
-
 impl Tunables {
     /// Gentler preset for low-end servers ("potato" profile in the mod config).
     #[must_use]
@@ -314,9 +313,15 @@ mod tests {
         assert_eq!(t.boil_c, 120);
         assert!(t.apply_kv("book.give_on_join", "false"));
         assert!(!t.give_book_on_join);
-        assert!(!t.apply_kv("nope.nothing", "1"), "unknown keys are rejected");
+        assert!(
+            !t.apply_kv("nope.nothing", "1"),
+            "unknown keys are rejected"
+        );
         assert!(!t.apply_kv("thermo.boil_c", "not-a-number"));
-        assert_eq!(t.boil_c, 120, "an unparsable value does not corrupt the field");
+        assert_eq!(
+            t.boil_c, 120,
+            "an unparsable value does not corrupt the field"
+        );
     }
 
     #[test]

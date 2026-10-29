@@ -538,7 +538,10 @@ fn block_len(b: &Block) -> usize {
         Block::Para(s) | Block::Bullet(s) | Block::Formula(s) => s.len() + 2,
         Block::Illustration { caption, .. } => caption.len() + 24,
         Block::Table(rows) => {
-            rows.iter().map(|(a, b)| a.len() + b.len() + 6).sum::<usize>() + 8
+            rows.iter()
+                .map(|(a, b)| a.len() + b.len() + 6)
+                .sum::<usize>()
+                + 8
         }
         Block::Break => 0,
     }
@@ -550,7 +553,14 @@ fn render_page(chapter: usize, title: &str, blocks: &[&Block]) -> String {
     let mut out = String::with_capacity(1_024);
     out.push('[');
     // Chapter ribbon + heading.
-    push_comp(&mut out, &format!("{}  ", chapter + 1), ch.color, true, false, false);
+    push_comp(
+        &mut out,
+        &format!("{}  ", chapter + 1),
+        ch.color,
+        true,
+        false,
+        false,
+    );
     push_comp(&mut out, ch.title_ru, "#FFFFFF", true, false, true);
     push_comp(&mut out, "\n", "#000000", false, false, false);
     push_comp(&mut out, title, ch.color, true, false, false);
@@ -600,7 +610,14 @@ fn push_reference_pages(pages: &mut Vec<String>, t: &Tunables) {
     push_comp(&mut a, "6  ", CHAPTERS[5].color, true, false, false);
     push_comp(&mut a, CHAPTERS[5].title_ru, "#FFFFFF", true, false, true);
     push_comp(&mut a, "\n", "#000000", false, false, false);
-    push_comp(&mut a, "Live Server Constants", CHAPTERS[5].color, true, false, false);
+    push_comp(
+        &mut a,
+        "Live Server Constants",
+        CHAPTERS[5].color,
+        true,
+        false,
+        false,
+    );
     push_comp(&mut a, "\n\n", "#000000", false, false, false);
     let rows: [(&str, String); 8] = [
         ("Ambient", format!("{} C", t.ambient_c)),
@@ -630,7 +647,14 @@ fn push_reference_pages(pages: &mut Vec<String>, t: &Tunables) {
     push_comp(&mut b, "6  ", CHAPTERS[5].color, true, false, false);
     push_comp(&mut b, CHAPTERS[5].title_ru, "#FFFFFF", true, false, true);
     push_comp(&mut b, "\n", "#000000", false, false, false);
-    push_comp(&mut b, "Density & Heat Table", CHAPTERS[5].color, true, false, false);
+    push_comp(
+        &mut b,
+        "Density & Heat Table",
+        CHAPTERS[5].color,
+        true,
+        false,
+        false,
+    );
     push_comp(&mut b, "\n\n", "#000000", false, false, false);
     // The eight most gameplay-relevant species, in descending density.
     let pick = [
@@ -660,7 +684,14 @@ fn push_reference_pages(pages: &mut Vec<String>, t: &Tunables) {
     push_comp(&mut c, "6  ", CHAPTERS[5].color, true, false, false);
     push_comp(&mut c, CHAPTERS[5].title_ru, "#FFFFFF", true, false, true);
     push_comp(&mut c, "\n", "#000000", false, false, false);
-    push_comp(&mut c, "Phase Diagram", CHAPTERS[5].color, true, false, false);
+    push_comp(
+        &mut c,
+        "Phase Diagram",
+        CHAPTERS[5].color,
+        true,
+        false,
+        false,
+    );
     push_comp(&mut c, "\n\n", "#000000", false, false, false);
     let species_count = SPECIES_COUNT;
     let lines = [
@@ -686,14 +717,7 @@ fn push_reference_pages(pages: &mut Vec<String>, t: &Tunables) {
 // ---------------------------------------------------------------------------
 
 /// Appends one `{"text":...}` component.
-fn push_comp(
-    out: &mut String,
-    text: &str,
-    color: &str,
-    bold: bool,
-    italic: bool,
-    underline: bool,
-) {
+fn push_comp(out: &mut String, text: &str, color: &str, bold: bool, italic: bool, underline: bool) {
     if !out.ends_with('[') {
         out.push(',');
     }
@@ -856,7 +880,11 @@ mod tests {
     #[test]
     fn book_has_enough_pages() {
         let a = atlas();
-        assert!(a.page_count() >= 14, "atlas is too thin: {}", a.page_count());
+        assert!(
+            a.page_count() >= 14,
+            "atlas is too thin: {}",
+            a.page_count()
+        );
         assert!(a.char_count() > 4_000, "atlas text is too short");
     }
 
@@ -930,7 +958,10 @@ mod tests {
         t.ambient_c = 5;
         let a = build(&t);
         let joined = a.pages.join("");
-        assert!(joined.contains("80 C"), "live boiling point must be printed");
+        assert!(
+            joined.contains("80 C"),
+            "live boiling point must be printed"
+        );
         assert!(joined.contains("5 C"), "live ambient must be printed");
         assert!(a.edition.contains(&t.book_version));
     }

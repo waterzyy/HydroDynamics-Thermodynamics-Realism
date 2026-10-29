@@ -528,12 +528,7 @@ fn clamp_i32(v: i64) -> i32 {
 ///
 /// Returns the emitted event (if any) and the pressure spike injected into the
 /// cell by an explosive transition.
-pub fn apply_phase(
-    grid: &mut Grid,
-    slot: usize,
-    idx: usize,
-    t: &Tunables,
-) -> Option<(Event, u16)> {
+pub fn apply_phase(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<(Event, u16)> {
     let v = grid.voxel(slot, idx);
     match v.species {
         s if s == Species::Water as u8 || s == Species::SaltWater as u8 => {
@@ -580,14 +575,7 @@ pub fn apply_phase(
             // Water contact wins over solidification: the quench is explosive and
             // must be resolved before the lava has a chance to cool into basalt.
             if let Some((result, spike)) = try_quench(grid, slot, idx, t) {
-                return Some((
-                    Event::Quench {
-                        slot,
-                        idx,
-                        result,
-                    },
-                    spike,
-                ));
+                return Some((Event::Quench { slot, idx, result }, spike));
             }
             if v.temp < t.basalt_c {
                 let mut nv = v;
@@ -661,14 +649,7 @@ fn freeze_cell(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> (Event
     nv.flags |= flags::TRANSITIONED;
     let mass = nv.mass;
     grid.put(slot, idx, nv);
-    (
-        Event::Freeze {
-            slot,
-            idx,
-            mass,
-        },
-        0,
-    )
+    (Event::Freeze { slot, idx, mass }, 0)
 }
 
 /// Ice/snow → water.
@@ -775,7 +756,14 @@ fn boil_cell(grid: &mut Grid, slot: usize, idx: usize, _t: &Tunables) -> (Event,
         nv.flags |= flags::FLASHING;
     }
     grid.put(slot, idx, nv);
-    (Event::Boil { slot, idx, mass: boiled }, 0)
+    (
+        Event::Boil {
+            slot,
+            idx,
+            mass: boiled,
+        },
+        0,
+    )
 }
 
 /// Finds the first gas cell above a submerged boiling cell, at most
@@ -986,8 +974,7 @@ fn explode(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> u16 {
 ///   the "boiling cauldron" effect described in the Atlas.
 pub fn nucleate(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> bool {
     let v = grid.voxel(slot, idx);
-    let is_water =
-        v.species == Species::Water as u8 || v.species == Species::SaltWater as u8;
+    let is_water = v.species == Species::Water as u8 || v.species == Species::SaltWater as u8;
     if !is_water {
         return false;
     }
@@ -1112,7 +1099,10 @@ mod tests {
         let double = boiling_at(&t, t.sea_level_pressure.saturating_mul(2));
         let half = boiling_at(&t, t.sea_level_pressure / 2);
         assert_eq!(sea, 100, "sea level must boil at 100 °C");
-        assert!(double > sea + 15, "2 atm should boil well above 100: {double}");
+        assert!(
+            double > sea + 15,
+            "2 atm should boil well above 100: {double}"
+        );
         assert!(half < sea - 15, "0.5 atm should boil below 100: {half}");
     }
 
@@ -1134,7 +1124,10 @@ mod tests {
         assert_eq!(pressure_at_depth(0, &t), t.sea_level_pressure);
         assert!(pressure_at_depth(10, &t) > t.sea_level_pressure);
         assert_eq!(pressure_at_depth(-5, &t), t.sea_level_pressure);
-        assert_eq!(temperature_at_depth(64, &t), t.ambient_c + t.rock_gradient_c);
+        assert_eq!(
+            temperature_at_depth(64, &t),
+            t.ambient_c + t.rock_gradient_c
+        );
         assert!(temperature_at_depth(10_000, &t) <= 2_000);
     }
 
@@ -1212,7 +1205,10 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         assert_eq!(g.voxels(slot)[idx].species(), Species::Water);
-        assert_eq!(g.voxels(slot)[dirs::index(3, 4, 3)].species(), Species::Stone);
+        assert_eq!(
+            g.voxels(slot)[dirs::index(3, 4, 3)].species(),
+            Species::Stone
+        );
     }
 
     #[test]
@@ -1334,10 +1330,16 @@ mod tests {
         for _ in 0..40 {
             conduction_pair(&mut g, slot, a, crate::dirs::DIR_POS_X, &t);
             let gap = (g.voxels(slot)[a].temp as i32 - g.voxels(slot)[b].temp as i32).abs();
-            assert!(gap <= prev_gap, "the gradient must never grow: {gap} > {prev_gap}");
+            assert!(
+                gap <= prev_gap,
+                "the gradient must never grow: {gap} > {prev_gap}"
+            );
             prev_gap = gap;
         }
-        assert!(prev_gap < 60, "conduction should have closed most of the gap: {prev_gap}");
+        assert!(
+            prev_gap < 60,
+            "conduction should have closed most of the gap: {prev_gap}"
+        );
     }
 
     #[test]
@@ -1394,7 +1396,10 @@ mod tests {
             relax_surface(&mut g, slot, hot, &t);
             relax_surface(&mut g, slot, cold, &t);
         }
-        assert!(g.voxels(slot)[hot].temp < 2_000, "glowing rock must radiate");
+        assert!(
+            g.voxels(slot)[hot].temp < 2_000,
+            "glowing rock must radiate"
+        );
         assert!(
             g.voxels(slot)[cold].temp <= 30,
             "lukewarm water must not cool much: {}",
@@ -1429,7 +1434,10 @@ mod tests {
         assert!(nucleate(&mut g, slot, water, &t));
         let v = g.voxels(slot)[water];
         assert!(v.flags & flags::BUBBLE != 0, "nucleation site expected");
-        assert!(v.flags & flags::UPDRAFT != 0, "updraft expected for entities");
+        assert!(
+            v.flags & flags::UPDRAFT != 0,
+            "updraft expected for entities"
+        );
         assert!(v.temp > 30, "contact heating expected");
     }
 
@@ -1466,7 +1474,11 @@ mod tests {
         }
         assert!(shattered, "glass must eventually burst");
         assert_eq!(g.voxels(slot)[glass].species(), Species::Air);
-        assert_eq!(g.voxels(slot)[stone].species(), Species::Stone, "stone holds");
+        assert_eq!(
+            g.voxels(slot)[stone].species(),
+            Species::Stone,
+            "stone holds"
+        );
     }
 
     #[test]
@@ -1492,7 +1504,10 @@ mod tests {
         }
         g.put(slot, a, Voxel::stone(20));
         let res = tick_cell(&mut g, slot, a, &t);
-        assert!(!res.active, "a uniform 20 °C region must be allowed to sleep");
+        assert!(
+            !res.active,
+            "a uniform 20 °C region must be allowed to sleep"
+        );
     }
 
     #[test]

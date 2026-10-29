@@ -114,7 +114,13 @@ impl Chunk {
             flags: cflags::ASLEEP,
             stable_ticks: SLEEP_AFTER_TICKS,
             active_count: 0,
-            seed: chunk_seed(world_seed, coords[0], coords[1], coords[2], 0x48_59_44_52_4F),
+            seed: chunk_seed(
+                world_seed,
+                coords[0],
+                coords[1],
+                coords[2],
+                0x48_59_44_52_4F,
+            ),
             ambient: 20,
             last_tick: 0,
         }
@@ -492,7 +498,10 @@ impl Grid {
     /// Number of resident (non-placeholder) chunks.
     #[must_use]
     pub fn resident_chunks(&self) -> usize {
-        self.chunks.iter().filter(|c| c.coords[0] != i32::MIN).count()
+        self.chunks
+            .iter()
+            .filter(|c| c.coords[0] != i32::MIN)
+            .count()
     }
 
     // -----------------------------------------------------------------------
@@ -1121,8 +1130,16 @@ mod tests {
         let idx = dirs::index(1, 1, 1);
         g.wake_with_neighbors(slot, idx);
         // centre + 6 neighbours
-        assert_eq!(g.front.len(), 7, "expected 7 entries, got {}", g.front.len());
-        assert_eq!(g.chunks[slot].active_count, 7, "accounting must match the list");
+        assert_eq!(
+            g.front.len(),
+            7,
+            "expected 7 entries, got {}",
+            g.front.len()
+        );
+        assert_eq!(
+            g.chunks[slot].active_count, 7,
+            "accounting must match the list"
+        );
         let c = &g.chunks[slot];
         for d in dirs::DIRS {
             let (x, y, z) = dirs::unindex(idx);
@@ -1199,7 +1216,10 @@ mod tests {
         g.chunks[1].stable_ticks = 3;
         g.ensure_chunk([2, 0, 0]);
         assert_eq!(g.evictions, 1);
-        assert!(g.find([0, 0, 0]).is_none(), "sleepiest chunk should be evicted");
+        assert!(
+            g.find([0, 0, 0]).is_none(),
+            "sleepiest chunk should be evicted"
+        );
         assert!(g.find([1, 0, 0]).is_some());
         assert!(g.find([2, 0, 0]).is_some());
     }

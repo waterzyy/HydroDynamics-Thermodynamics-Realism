@@ -220,7 +220,10 @@ fn a_thermal_spring_boils_its_pool_and_emits_steam() {
         hottest > 60,
         "the magma must heat the pool substantially, only reached {hottest} °C"
     );
-    assert!(saw_steam, "a magma-heated pool must eventually produce steam");
+    assert!(
+        saw_steam,
+        "a magma-heated pool must eventually produce steam"
+    );
 }
 
 #[test]
@@ -285,7 +288,10 @@ fn lava_quenched_by_water_becomes_obsidian_and_reports_the_event() {
     }
     match quench_species {
         Some(s) => assert!(
-            matches!(s, Species::Obsidian | Species::VolcanicGlass | Species::Pumice),
+            matches!(
+                s,
+                Species::Obsidian | Species::VolcanicGlass | Species::Pumice
+            ),
             "unexpected quench product {s:?}"
         ),
         None => panic!("lava covered by water must quench and emit a Quench event"),
@@ -420,7 +426,11 @@ fn the_tick_budget_defers_work_instead_of_dropping_it() {
         let processed = sim.tick();
         assert!(processed <= 128, "budget exceeded at tick {i}: {processed}");
     }
-    assert_eq!(sim.grid.total_mass(), before, "deferred work must not lose mass");
+    assert_eq!(
+        sim.grid.total_mass(),
+        before,
+        "deferred work must not lose mass"
+    );
 }
 
 /// Mass of the water family (liquid water, vapour, ice, snow), in 1/8 units.
@@ -467,7 +477,10 @@ fn mass_is_conserved_across_a_chaotic_scenario() {
         // itself quenching into obsidian/pumice leaves the water family on
         // purpose: that is a phase change into terrain, see `Chunk::total_mass`.)
         let now = water_mass(&sim, slot);
-        assert_eq!(now, initial, "water mass drifted at tick {tick}: {initial} -> {now}");
+        assert_eq!(
+            now, initial,
+            "water mass drifted at tick {tick}: {initial} -> {now}"
+        );
     }
 }
 
@@ -599,6 +612,9 @@ fn flow_hints_encode_the_direction() {
     let v = get(&sim, slot, 4, 4, 4);
     assert!(v.is_fluid(), "the water must have fallen");
     let dir = hydrodynamics::voxel::aux::flow_dir(v.aux);
-    assert!(dir < 6, "a falling cell must record its direction, got {dir}");
+    assert!(
+        dir < 6,
+        "a falling cell must record its direction, got {dir}"
+    );
     assert!(v.has(flags::MOVED));
 }
