@@ -19,16 +19,15 @@ jobs:
         run: |
           set +e
           {
-            echo "### cargo check (native)"
-            cargo check --all-targets 2>&1
+            echo "### cargo check (short)"
+            cargo check --all-targets --message-format=short 2>&1 | grep -E "error|warning" | grep -v "^ *Compiling" | head -120
             echo "### cargo test"
-            cargo test --all-targets 2>&1
+            cargo test --all-targets 2>&1 | grep -E "^(test |error|failures:|test result)" | head -120
             echo "### wasm build"
-            cargo build --release --target wasm32-unknown-unknown 2>&1
-            echo "### clippy"
-            cargo clippy --all-targets 2>&1 | grep -E "^(warning|error)" | sort | uniq -c | head -40
+            cargo build --release --target wasm32-unknown-unknown --message-format=short 2>&1 | tail -30
+            ls -l target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null || true
           } > /tmp/report.txt
-          tail -c 55000 /tmp/report.txt > /tmp/report_tail.txt
+          cp /tmp/report.txt /tmp/report_tail.txt
           wc -c /tmp/report.txt
       - name: Post report as commit comment
         env:

@@ -120,6 +120,7 @@ impl Default for Tunables {
     }
 }
 
+
 impl Tunables {
     /// Gentler preset for low-end servers ("potato" profile in the mod config).
     #[must_use]

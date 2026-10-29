@@ -1011,6 +1011,20 @@ impl Voxel {
         Species::from_u8(self.species).is_fluid()
     }
 
+    /// `true` for liquids (water, lava, molten metal…).
+    #[inline]
+    #[must_use]
+    pub const fn is_liquid(&self) -> bool {
+        matches!(Species::from_u8(self.species).class(), Class::Liquid)
+    }
+
+    /// `true` for gases (steam, fire, compressed air).
+    #[inline]
+    #[must_use]
+    pub const fn is_gas(&self) -> bool {
+        matches!(Species::from_u8(self.species).class(), Class::Gas)
+    }
+
     /// `true` for empty-like cells.
     #[inline]
     #[must_use]

@@ -535,7 +535,7 @@ pub fn apply_phase(
                 return Some(freeze_cell(grid, slot, idx, t));
             }
             if v.temp >= boil_point_c(v.pressure, t) {
-                return boil_cell(grid, slot, idx, t);
+                return Some(boil_cell(grid, slot, idx, t));
             }
             None
         }
@@ -880,7 +880,7 @@ fn try_quench(grid: &mut Grid, slot: usize, idx: usize, t: &Tunables) -> Option<
     let mut steam = water;
     steam.species = Species::Steam as u8;
     steam.mass = water.mass.min(MASS_FULL);
-    steam.temp = clamp_temp(lava.temp.max(120));
+    steam.temp = clamp_temp(lava.temp.max(120) as i32);
     steam.flags = flags::ACTIVE | flags::FLASHING | flags::MOVED;
     steam.pressure = steam.pressure.saturating_add(t.flash_pressure);
     grid.put(wslot, widx, steam);
@@ -1367,8 +1367,8 @@ mod tests {
     #[test]
     fn radiation_cools_hot_cells_and_leaves_cold_ones_alone() {
         let (mut g, t) = setup();
-        g.chunks[slot_of(&g)].ambient = 20;
         let slot = slot_of(&g);
+        g.chunks[slot].ambient = 20;
         let hot = dirs::index(2, 2, 2);
         let cold = dirs::index(6, 6, 6);
         g.put(slot, hot, Voxel::new(Species::Stone, 2_000));
