@@ -244,6 +244,65 @@ impl Species {
     pub const fn name(self) -> &'static str {
         MATERIALS[self as usize].name
     }
+
+    /// Parses a species from the name used in the manifest and by `/hd set`
+    /// (`"water"`, `"Hydrodynamics:Steam"`, `"volcanic_glass"`) or from its
+    /// numeric id (`"9"`).
+    ///
+    /// Matching is case-insensitive and ignores `_`, `-`, spaces and any
+    /// namespace prefix, so a datapack author can type `minecraft:water` and a
+    /// console user can type `Water` and both resolve. There is no allocation:
+    /// the comparison is done in place over a fixed candidate table, which keeps
+    /// the parser usable from the wasm command surface where a bad argument must
+    /// never panic.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Species> {
+        // A bare number is the wire id.
+        let digits = name.as_bytes();
+        if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
+            let mut id = 0u32;
+            for b in digits {
+                id = id * 10 + u32::from(b - b'0');
+                if id > u8::MAX as u32 {
+                    return None;
+                }
+            }
+            let sp = Species::from_u8(id as u8);
+            // Reject ids that the table pads with Air but that were never named.
+            return if sp == Species::Air && id != 0 { None } else { Some(sp) };
+        }
+        // Strip a `namespace:` prefix.
+        let name = match name.split_once(':') {
+            Some((_, rest)) => rest,
+            None => name,
+        };
+        let mut i = 0;
+        while i < MATERIALS.len() {
+            let sp = Species::from_u8(i as u8);
+            if eq_loose(sp.name(), name) {
+                return Some(sp);
+            }
+            i += 1;
+        }
+        None
+    }
+}
+
+/// Case-insensitive, separator-insensitive string equality.
+///
+/// `"VolcanicGlass"`, `"volcanic_glass"` and `"VOLCANIC-GLASS"` all match, which
+/// is what makes a hand-typed `/hd set` argument forgiving.
+#[must_use]
+fn eq_loose(a: &str, b: &str) -> bool {
+    let mut x = a.bytes().filter(|c| !matches!(c, b'_' | b'-' | b' '));
+    let mut y = b.bytes().filter(|c| !matches!(c, b'_' | b'-' | b' '));
+    loop {
+        match (x.next(), y.next()) {
+            (None, None) => return true,
+            (Some(p), Some(q)) if p.eq_ignore_ascii_case(&q) => {}
+            _ => return false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

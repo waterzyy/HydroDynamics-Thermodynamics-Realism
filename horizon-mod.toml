@@ -37,6 +37,8 @@ imports          = []              # zero host imports: pure computation
 
 [wasm.exports]
 api_version      = "horizon_api_version"    # () -> u32
+alloc            = "horizon_alloc"          # (u32 len) -> *mut u8   argument buffers
+free             = "horizon_free"           # (ptr, u32 len) -> ()
 world_load       = "horizon_on_world_load"  # (u32 seed_hi, u32 seed_lo, i32 ambient_c) -> u32
 configure        = "horizon_configure"      # (ptr, u32, ptr, u32) -> u32
 tick             = "horizon_tick"           # () -> u32
@@ -45,6 +47,11 @@ book_nbt_ptr     = "horizon_book_nbt_ptr"   # () -> *const u8
 book_nbt_len     = "horizon_book_nbt_len"   # () -> u32
 book_json_ptr    = "horizon_book_json_ptr"  # () -> *const u8
 book_json_len    = "horizon_book_json_len"  # () -> u32
+entity_forces    = "horizon_entity_forces"  # (i32, i32, i32, u32 density) -> u64
+entity_status    = "horizon_entity_status"  # (i32, i32, i32) -> u32
+run_command      = "horizon_run_command"    # (ptr, u32) -> u32  JSON reply
+reply_ptr        = "horizon_reply_ptr"      # () -> *const u8
+reply_len        = "horizon_reply_len"      # () -> u32
 get_block        = "horizon_get_block"      # (i32, i32, i32) -> u64
 set_block        = "horizon_set_block"      # (i32, i32, i32, u64) -> u32
 probe            = "horizon_probe"          # (i32, i32, i32) -> u32
@@ -249,13 +256,17 @@ icon     = "minecraft:book"
 name        = "hd"
 description = "HydroDynamics administration and diagnostics"
 permission  = "hydrodynamics.admin"
+# `run` is the argument line forwarded verbatim to `horizon_run_command`; the
+# module answers with JSON (see `src/commands.rs`). `usage` is what the console
+# prints for `/hd help`, so it is kept identical to the module's own answer.
 children = [
-  { name = "stats",  run = "dump_stats" },
-  { name = "book",   run = "give_book", args = { chapter = "optional" } },
-  { name = "probe",  run = "probe_block", args = { pos = "block_pos" } },
-  { name = "set",    run = "set_voxel", args = { pos = "block_pos", species = "string", mass = "0..8", temp = "i16" } },
-  { name = "wake",   run = "wake_chunks", args = { radius = "1..8" } },
-  { name = "profile", run = "set_profile", args = { profile = "low|default|high" } },
+  { name = "stats",   run = "stats" },
+  { name = "book",    run = "book",    args = { chapter = "optional" }, usage = "book [chapter]" },
+  { name = "probe",   run = "probe",   args = { pos = "block_pos" }, usage = "probe <x> <y> <z>" },
+  { name = "set",     run = "set",     args = { pos = "block_pos", species = "string", mass = "0..8", temp = "i16" }, usage = "set <x> <y> <z> <species> [mass] [temp]" },
+  { name = "wake",    run = "wake",    args = { radius = "1..8" }, usage = "wake <radius> [x y z]" },
+  { name = "profile", run = "profile", args = { profile = "low|default|high" }, usage = "profile <low|default|high>" },
+  { name = "help",    run = "help" },
 ]
 
 # -----------------------------------------------------------------------------

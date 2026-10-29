@@ -34,6 +34,7 @@
 //! | [`hydro`] | communicating vessels, head, jets, buoyancy, fracture |
 //! | [`thermo`] | conduction, radiation, phase machine, quench |
 //! | [`entities`] | Archimedes, updrafts, drag, compression injuries |
+//! | [`commands`] | the `/hd` console surface declared in the manifest |
 //! | [`book`] | the generated "Atlas of Fluid Physics" (JSON + NBT) |
 //!
 //! ## WASM ABI
@@ -44,19 +45,26 @@
 //! | export | signature | purpose |
 //! |---|---|---|
 //! | `horizon_api_version` | `() -> u32` | ABI handshake |
+//! | `horizon_alloc` / `horizon_free` | `(len: u32) -> *mut u8` / `(ptr, len)` | host-side argument buffers |
 //! | `horizon_on_world_load` | `(seed_hi: u32, seed_lo: u32, ambient: i32) -> u32` | called once per world |
 //! | `horizon_configure` | `(k_ptr, k_len, v_ptr, v_len) -> u32` | one `key = value` from the TOML |
 //! | `horizon_tick` | `() -> u32` | world tick; returns active voxels processed |
-//! | `horizon_on_player_join` | `(player: u32, is_respawn: u32) -> u32` | grant the Atlas, returns page count |
+//! | `horizon_on_player_join` | `(player: u32, is_respawn: u32) -> u32` | grant the Atlas, returns its NBT length |
 //! | `horizon_book_nbt_ptr` / `_len` | `() -> *const u8` / `() -> u32` | written-book NBT blob |
 //! | `horizon_book_json_ptr` / `_len` | `() -> *const u8` / `() -> u32` | JSON twin of the same book |
 //! | `horizon_get_block` | `(x, y, z) -> u64` | packed voxel (see [`voxel::Voxel::to_u64`]) |
 //! | `horizon_set_block` | `(x, y, z, word: u64) -> u32` | write + wake the neighbourhood |
 //! | `horizon_probe` | `(x, y, z) -> u32` | species/temp/pressure for the HUD |
+//! | `horizon_entity_forces` | `(x, y, z, density) -> u64` | buoyancy, updraft, jet, drag for an entity |
+//! | `horizon_entity_status` | `(x, y, z) -> u32` | submersion depth + barotrauma | 
+//! | `horizon_run_command` | `(ptr, len) -> u32` | one `/hd` line → JSON reply |
+//! | `horizon_reply_ptr` / `_len` | `() -> *const u8` / `() -> u32` | the reply of the last command |
 //! | `horizon_stats_ptr` | `() -> *const u32` | 8 diagnostics words |
 //! | `horizon_event_pop` | `() -> u64` | next physics event (particles, sounds) |
 //!
-//! The host owns the memory: pointers stay valid until the next `horizon_tick`.
+//! The host writes arguments into buffers obtained from `horizon_alloc`; every
+//! pointer the module *returns* (book, stats, reply) stays valid until the next
+//! `horizon_tick` or until the same buffer is regenerated.
 //!
 //! ## Determinism
 //!
@@ -71,6 +79,7 @@
 #![allow(clippy::needless_range_loop)]
 
 pub mod book;
+pub mod commands;
 pub mod config;
 pub mod dirs;
 pub mod entities;
@@ -187,6 +196,8 @@ pub struct Sim {
     pub book_nbt: Vec<u8>,
     /// Cached JSON document for the book.
     pub book_json: Vec<u8>,
+    /// Reply buffer of the last `/hd` command (read by the host).
+    pub reply: Vec<u8>,
     /// Number of times the Atlas was handed to a player.
     pub books_granted: u32,
     /// `horizon_on_world_load` has been called.
@@ -226,6 +237,7 @@ impl Sim {
             atlas: None,
             book_nbt: Vec::new(),
             book_json: Vec::new(),
+            reply: Vec::new(),
             books_granted: 0,
             world_loaded: false,
             stats_out: [0; 8],
@@ -352,6 +364,16 @@ impl Sim {
         );
     }
 
+    /// Runs one `/hd` argument line and returns the length of the JSON reply,
+    /// which stays addressable through [`Sim::reply`] (and, across the ABI,
+    /// through `horizon_reply_ptr` / `horizon_reply_len`).
+    pub fn run_command(&mut self, line: &str) -> u32 {
+        let mut buf = core::mem::take(&mut self.reply);
+        let n = commands::dispatch(self, line, &mut buf);
+        self.reply = buf;
+        n
+    }
+
     /// Writes a block into the world (used by `/hd set`, worldgen and tests).
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, v: voxel::Voxel) {
         self.grid.set_world(x, y, z, v);
@@ -405,6 +427,50 @@ pub extern "C" fn horizon_api_version() -> u32 {
     API_VERSION
 }
 
+/// Allocates `len` bytes inside the module and returns their address.
+///
+/// This is the only way the host can hand a string to [`horizon_configure`] or
+/// [`horizon_run_command`]: the module owns its linear memory, so the host must
+/// ask for a buffer instead of writing into an address of its own choosing.
+/// Returns a null pointer when `len` is zero or the allocator is out of memory;
+/// every caller treats null as "the argument was ignored", never as a crash.
+///
+/// The buffer stays valid until it is returned with [`horizon_free`]. It is
+/// deliberately *not* the simulation's own storage, so a host that forgets to
+/// free it leaks a few dozen bytes rather than corrupting the grid.
+#[no_mangle]
+pub extern "C" fn horizon_alloc(len: u32) -> *mut u8 {
+    if len == 0 {
+        return core::ptr::null_mut();
+    }
+    match std::alloc::Layout::from_size_align(len as usize, 8) {
+        Ok(layout) => {
+            // SAFETY: the layout is non-zero sized and 8-aligned, so `alloc` is
+            // allowed to return memory for it.
+            let p = unsafe { std::alloc::alloc(layout) };
+            p
+        }
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// Releases a buffer obtained from [`horizon_alloc`].
+///
+/// # Safety
+/// `ptr` must have been returned by [`horizon_alloc`] with the same `len`, and
+/// must not be used afterwards. Passing null is a no-op.
+#[no_mangle]
+pub unsafe extern "C" fn horizon_free(ptr: *mut u8, len: u32) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    if let Ok(layout) = std::alloc::Layout::from_size_align(len as usize, 8) {
+        // SAFETY: the caller guarantees the pointer came from `horizon_alloc`
+        // with this exact length and alignment.
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
+}
+
 /// Called once per world load. `seed_hi`/`seed_lo` form the 64-bit world seed,
 /// `ambient` is the surface temperature in °C.
 ///
@@ -428,7 +494,8 @@ pub extern "C" fn horizon_on_world_load(seed_hi: u32, seed_lo: u32, ambient: i32
 ///
 /// # Safety
 /// `key_ptr`/`val_ptr` must point to `key_len`/`val_len` valid UTF-8 bytes in
-/// the module's linear memory (the host writes them through `horizon_alloc`).
+/// the module's linear memory, obtained from [`horizon_alloc`] (or the module's
+/// own buffers, which the host may also read).
 #[no_mangle]
 pub unsafe extern "C" fn horizon_configure(
     key_ptr: *const u8,
@@ -545,6 +612,76 @@ pub extern "C" fn horizon_probe(x: i32, y: i32, z: i32) -> u32 {
         Some(v) => pack_probe(v),
         None => u32::MAX,
     })
+}
+
+/// Asks the fluid field what it does to an entity of a given density.
+///
+/// Returns the packed [`entities::EntityForces`] word:
+///
+/// ```text
+/// bits  0..16  vertical acceleration, jet included   (i16, 1/16 m/s²)
+/// bits 16..32  horizontal jet push along X           (i16, 1/16 m/s)
+/// bits 32..48  horizontal jet push along Z           (i16, 1/16 m/s)
+/// bits 48..56  drag                                  (u8,  1/256 per tick)
+/// bits 56..64  flags: submerged | updraft | breathable | positive buoyancy
+/// ```
+///
+/// `density` is the entity's own density in kg/m³: 700 for a boat, 1 050 for a
+/// swimmer in leather, 2 100 for a player in iron armour. An entity in an
+/// unloaded chunk is treated as standing in still air.
+#[no_mangle]
+pub extern "C" fn horizon_entity_forces(x: i32, y: i32, z: i32, density: u32) -> u64 {
+    with_sim(|sim| {
+        entities::query(&sim.grid, x, y, z, density, &sim.tunables).to_u64()
+    })
+}
+
+/// Submersion depth and barotrauma for an entity at `(x, y, z)`:
+/// `depth_blocks | damage_per_second << 16`.
+///
+/// Split from [`horizon_entity_forces`] because the integrator only needs it
+/// once per player per second, while the force word is needed every tick.
+#[no_mangle]
+pub extern "C" fn horizon_entity_status(x: i32, y: i32, z: i32) -> u32 {
+    with_sim(|sim| {
+        entities::query(&sim.grid, x, y, z, 0, &sim.tunables).to_status_u32()
+    })
+}
+
+/// Runs one `/hd` command. `ptr`/`len` point at the UTF-8 argument line (see
+/// `horizon_alloc`); the reply is JSON and is read back with
+/// [`horizon_reply_ptr`] / [`horizon_reply_len`].
+///
+/// Returns the reply length in bytes. A malformed command is answered with
+/// `{"ok":false,...}`, never with a trap: the console must stay usable when the
+/// simulation is in a bad state, because it is the tool used to fix it.
+///
+/// # Safety
+/// `ptr` must point to `len` valid bytes in the module's linear memory, obtained
+/// from [`horizon_alloc`].
+#[no_mangle]
+pub unsafe extern "C" fn horizon_run_command(ptr: *const u8, len: u32) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller guarantees the pointer and the length (see the docs).
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    let Ok(line) = core::str::from_utf8(bytes) else {
+        return 0;
+    };
+    with_sim(|sim| sim.run_command(line))
+}
+
+/// Pointer to the JSON reply of the last `horizon_run_command`.
+#[no_mangle]
+pub extern "C" fn horizon_reply_ptr() -> *const u8 {
+    with_sim(|sim| sim.reply.as_ptr())
+}
+
+/// Length of the JSON reply of the last `horizon_run_command`.
+#[no_mangle]
+pub extern "C" fn horizon_reply_len() -> u32 {
+    with_sim(|sim| sim.reply.len() as u32)
 }
 
 /// Pointer to the eight diagnostics words (`active`, `processed`, `requeued`,
@@ -910,6 +1047,84 @@ mod tests {
         assert_eq!((word >> 4) & 0xF, 8, "mass is stored in 4 bits");
         let temp = ((word >> 8) & 0xFFF) as i32 - 273;
         assert_eq!(temp, 1_050);
+    }
+
+    #[test]
+    fn entity_forces_are_packed_and_signed() {
+        let mut s = sim();
+        let sl = slot(&s);
+        for y in 1..8 {
+            s.grid.put(sl, dirs::index(4, y, 4), Voxel::water(20));
+        }
+        s.grid.wake_all(sl);
+        for _ in 0..20 {
+            s.tick();
+        }
+        // A boat (700 kg/m³) floats, iron armour (2 100) sinks.
+        let wood = entities::EntityForces::from_u64(horizon_entity_forces(4, 4, 4, 700));
+        let iron = entities::EntityForces::from_u64(horizon_entity_forces(4, 4, 4, 2_100));
+        assert!(wood.accel > 0, "wood must be pushed up: {wood:?}");
+        assert!(iron.accel < 0, "armour must sink: {iron:?}");
+        assert_ne!(wood.flags & entities::force_flags::SUBMERGED, 0);
+        assert_ne!(wood.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
+        assert_eq!(iron.flags & entities::force_flags::POSITIVE_BUOYANCY, 0);
+        // Dry air: no buoyancy, breathable, no damage.
+        let air = entities::EntityForces::from_u64(horizon_entity_forces(12, 12, 12, 700));
+        assert_eq!(air.accel, 0);
+        assert_ne!(air.flags & entities::force_flags::BREATHABLE, 0);
+        assert_eq!(air.depth, 0);
+    }
+
+    #[test]
+    fn entity_status_reports_depth_and_damage() {
+        let mut s = sim();
+        let sl = slot(&s);
+        for y in 1..12 {
+            s.grid.put(sl, dirs::index(3, y, 3), Voxel::water(20));
+        }
+        s.grid.wake_all(sl);
+        for _ in 0..40 {
+            s.tick();
+        }
+        let word = horizon_entity_status(3, 4, 3);
+        let (depth, damage) = entities::EntityForces::from_status_u32(word);
+        assert!(depth >= 6, "depth must count the column above: {depth}");
+        assert!(damage > 0, "deep water must hurt: {damage}");
+        let (shallow_depth, shallow_damage) =
+            entities::EntityForces::from_status_u32(horizon_entity_status(3, 11, 3));
+        assert!(shallow_depth < depth, "{shallow_depth} vs {depth}");
+        assert_eq!(shallow_damage, 0, "a shallow dive is harmless");
+    }
+
+    #[test]
+    fn commands_are_reachable_through_the_abi() {
+        let mut s = sim();
+        s.grid.wake_all(slot(&s));
+        let line = "set 2 2 2 lava 8 1200";
+        let n = s.run_command(line);
+        assert!(n > 0);
+        let text = core::str::from_utf8(&s.reply).unwrap();
+        assert!(text.contains("\"ok\":true"), "{text}");
+        assert_eq!(s.get_block(2, 2, 2).map(|v| v.species()), Some(Species::Lava));
+
+        // And through the exported entry point, using a buffer the module owns.
+        let ptr = horizon_alloc(5);
+        assert!(!ptr.is_null());
+        // SAFETY: the buffer has room for the 5 bytes we write.
+        unsafe { core::ptr::copy_nonoverlapping(b"stats".as_ptr(), ptr, 5) };
+        // SAFETY: the pointer and length are the ones we just allocated.
+        let n = unsafe { horizon_run_command(ptr, 5) };
+        assert_eq!(n as usize, horizon_reply_len());
+        assert!(n > 0);
+        // SAFETY: `ptr` came from `horizon_alloc(5)`.
+        unsafe { horizon_free(ptr, 5) };
+
+        // Null and empty input are ignored rather than trapping.
+        assert_eq!(horizon_alloc(0) as usize, 0);
+        // SAFETY: a null pointer is explicitly allowed and is a no-op.
+        unsafe { horizon_free(core::ptr::null_mut(), 0) };
+        // SAFETY: null is rejected before dereferencing.
+        assert_eq!(unsafe { horizon_run_command(core::ptr::null(), 3) }, 0);
     }
 
     #[test]

@@ -182,6 +182,182 @@ pub fn terminal_velocity(block_density: u32, fluid_density: u32, t: &Tunables) -
     clamp_vel(speed as i32)
 }
 
+// ---------------------------------------------------------------------------
+// The packed ABI view
+// ---------------------------------------------------------------------------
+
+/// Bit flags of [`EntityForces::flags`], mirrored to the host in the packed word.
+pub mod force_flags {
+    /// The entity is inside a liquid cell (Archimedes applies).
+    pub const SUBMERGED: u8 = 1 << 0;
+    /// A convective bubble column is carrying the entity upwards.
+    pub const UPDRAFT: u8 = 1 << 1;
+    /// The cell holds breathable gas.
+    pub const BREATHABLE: u8 = 1 << 2;
+    /// The entity is lighter than the fluid, so it will surface on its own.
+    pub const POSITIVE_BUOYANCY: u8 = 1 << 3;
+}
+
+/// Everything the host's entity integrator needs from the fluid field, gathered
+/// in one pass so that a query costs one voxel read per axis rather than six
+/// separate exported calls.
+///
+/// This is the ABI surface behind `horizon_entity_forces` /
+/// `horizon_entity_status`; the fields are already in the engine's units
+/// ("1/16 m/s" for velocities, half-hearts per second for damage), so the host
+/// does not have to know any of the mod's internal fixed-point scales.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntityForces {
+    /// Vertical acceleration, jet included. Positive = up.
+    pub accel: Vel,
+    /// Horizontal jet push along X (`+X` east).
+    pub push_x: Vel,
+    /// Horizontal jet push along Z (`+Z` south).
+    pub push_z: Vel,
+    /// Velocity damping in 1/256ths per tick (`0..=255`).
+    pub drag: u16,
+    /// Depth below the free surface, in blocks.
+    pub depth: u16,
+    /// Compression (barotrauma) damage, in half-hearts per second.
+    pub damage_per_second: u16,
+    /// See [`force_flags`].
+    pub flags: u8,
+}
+
+impl EntityForces {
+    /// Packs the word returned by `horizon_entity_forces`:
+    ///
+    /// ```text
+    /// bits  0..16  accel            (i16, 1/16 m/s²)
+    /// bits 16..32  push_x           (i16, 1/16 m/s)
+    /// bits 32..48  push_z           (i16, 1/16 m/s)
+    /// bits 48..56  drag             (u8, 1/256 per tick)
+    /// bits 56..64  flags            (u8, see `force_flags`)
+    /// ```
+    #[must_use]
+    pub fn to_u64(self) -> u64 {
+        let accel = self.accel as u16 as u64;
+        let px = self.push_x as u16 as u64;
+        let pz = self.push_z as u16 as u64;
+        let drag = self.drag.min(255) as u64;
+        accel | (px << 16) | (pz << 32) | (drag << 48) | ((self.flags as u64) << 56)
+    }
+
+    /// Inverse of [`EntityForces::to_u64`].
+    #[must_use]
+    pub fn from_u64(word: u64) -> EntityForces {
+        EntityForces {
+            accel: (word & 0xFFFF) as u16 as i16,
+            push_x: ((word >> 16) & 0xFFFF) as u16 as i16,
+            push_z: ((word >> 32) & 0xFFFF) as u16 as i16,
+            drag: ((word >> 48) & 0xFF) as u16,
+            depth: 0,
+            damage_per_second: 0,
+            flags: (word >> 56) as u8,
+        }
+    }
+
+    /// Packs the word returned by `horizon_entity_status`:
+    /// `depth | damage_per_second << 16`.
+    #[must_use]
+    pub fn to_status_u32(self) -> u32 {
+        u32::from(self.depth) | (u32::from(self.damage_per_second) << 16)
+    }
+
+    /// Inverse of [`EntityForces::to_status_u32`].
+    #[must_use]
+    pub fn from_status_u32(word: u32) -> (u16, u16) {
+        ((word & 0xFFFF) as u16, (word >> 16) as u16)
+    }
+}
+
+/// Gathers the forces acting on an entity of the given density standing at
+/// `(x, y, z)`.
+///
+/// The four effects the Atlas promises the player are resolved here, in the
+/// order they happen physically: buoyancy against the surrounding fluid, the
+/// entrainment floor of a bubble column, the horizontal push of a jet, and the
+/// damping that fluid applies to motion. Compression damage only depends on the
+/// hydrostatic head, so it is read from the column rather than accumulated.
+#[must_use]
+pub fn query(grid: &Grid, x: i32, y: i32, z: i32, entity_density: u32, t: &Tunables) -> EntityForces {
+    let cell = match grid.get_world(x, y, z) {
+        Some(v) => v,
+        None => {
+            return EntityForces {
+                flags: force_flags::BREATHABLE,
+                ..EntityForces::default()
+            }
+        }
+    };
+    let liquid = cell.is_fluid() && cell.mass > 0 && !cell.is_gas();
+    let fluid_density = if cell.is_fluid() && cell.mass > 0 {
+        cell.effective_density()
+    } else {
+        0
+    };
+
+    let mut out = EntityForces {
+        drag: drag_256(grid, x, y, z),
+        ..EntityForces::default()
+    };
+    if fluid_density > 0 {
+        out.accel = clamp_vel(hydro::buoyancy(entity_density, fluid_density));
+    }
+    if liquid {
+        out.flags |= force_flags::SUBMERGED;
+        out.depth = submersion_depth(grid, x, y, z);
+        let pressure = max_pressure_in_column(grid, x, y, z).max(cell.pressure);
+        out.damage_per_second = compression_damage_per_second(pressure, t);
+    }
+    if cell.flags & flags::UPDRAFT != 0 || cell.flags & flags::BUBBLE != 0 {
+        // Entrainment: the column's own velocity dominates the density term.
+        out.flags |= force_flags::UPDRAFT;
+        if out.accel < t.bubble_lift {
+            out.accel = t.bubble_lift;
+        }
+    }
+    if entity_density < fluid_density {
+        out.flags |= force_flags::POSITIVE_BUOYANCY;
+    }
+    if breathable(grid, x, y, z) {
+        out.flags |= force_flags::BREATHABLE;
+    }
+
+    let (coords, idx) = Grid::world_to_local(x, y, z);
+    if let Some(slot) = grid.find(coords) {
+        let jet = hydro::jet_velocity(grid, slot, idx, t);
+        out.accel = clamp_vel(out.accel as i32 + jet[1] as i32);
+        out.push_x = jet[0];
+        out.push_z = jet[2];
+    }
+    out
+}
+
+/// Highest hydrostatic pressure in the water column that contains `(x, y, z)`.
+///
+/// Damage is dealt by the pressure *at the entity*, which for a diver is the
+/// head of everything above them; reading the cell's own field is therefore
+/// enough once the column has settled, but taking the max over the column makes
+/// the value correct on the very tick the diver enters, before the pressure
+/// field has propagated down to them.
+fn max_pressure_in_column(grid: &Grid, x: i32, y: i32, z: i32) -> u16 {
+    let mut best = 0u16;
+    let mut yy = y;
+    for _ in 0..512 {
+        match grid.get_world(x, yy, z) {
+            Some(v) if v.is_fluid() && v.mass > 0 => {
+                if v.pressure > best {
+                    best = v.pressure;
+                }
+                yy += 1;
+            }
+            _ => break,
+        }
+    }
+    best
+}
+
 /// Gravity constant exposed for the entity integrator.
 pub const GRAVITY: i32 = GRAVITY_Q4;
 
