@@ -4,8 +4,9 @@
 //! `wake`, `profile`) and the host executes it by forwarding the raw argument
 //! line to [`dispatch`]. Keeping the whole tree here — rather than in the
 //! engine — means the console surface can never drift from the simulation: a
-//! tunable is changed through exactly the same `Tunables::apply_kv` path that
-//! the TOML loader uses, and `/hd set` writes through `Grid::set_world`, so the
+//! tunable is changed through exactly the same
+//! [`crate::config::Tunables::apply_kv`] path that the TOML loader uses, and
+//! `/hd set` writes through [`Grid::set_world`], so the
 //! scheduler owns the wake exactly as it does for a block break.
 //!
 //! Every handler answers with JSON in one of two shapes:
